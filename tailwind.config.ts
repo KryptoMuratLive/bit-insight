@@ -61,6 +61,30 @@ export default {
 					'accent-foreground': 'hsl(var(--sidebar-accent-foreground))',
 					border: 'hsl(var(--sidebar-border))',
 					ring: 'hsl(var(--sidebar-ring))'
+				},
+				// Trading specific colors
+				bull: {
+					DEFAULT: 'hsl(var(--bull))',
+					foreground: 'hsl(var(--bull-foreground))'
+				},
+				bear: {
+					DEFAULT: 'hsl(var(--bear))',
+					foreground: 'hsl(var(--bear-foreground))'
+				},
+				warning: {
+					DEFAULT: 'hsl(var(--warning))',
+					foreground: 'hsl(var(--warning-foreground))'
+				},
+				neutral: 'hsl(var(--neutral))',
+				// Chart colors  
+				chart: {
+					bg: 'hsl(var(--chart-bg))',
+					grid: 'hsl(var(--chart-grid))',
+					text: 'hsl(var(--chart-text))',
+					ema50: 'hsl(var(--chart-ema50))',
+					ema200: 'hsl(var(--chart-ema200))',
+					donchianHigh: 'hsl(var(--chart-donchian-high))',
+					donchianLow: 'hsl(var(--chart-donchian-low))'
 				}
 			},
 			borderRadius: {
