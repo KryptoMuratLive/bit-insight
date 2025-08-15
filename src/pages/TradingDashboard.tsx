@@ -112,7 +112,7 @@ function adx(candles: Candle[], period = 14){
 }
 
 // --- Component
-export default function BTCTradingDashboard(){
+function BTCTradingDashboard(){
   // Chart refs
   const containerRef = useRef<HTMLDivElement | null>(null);
 
@@ -948,3 +948,5 @@ export default function BTCTradingDashboard(){
     </div>
   );
 }
+
+export default BTCTradingDashboard;
