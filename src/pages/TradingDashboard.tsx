@@ -8,6 +8,7 @@ import { Input } from "@/components/ui/input";
 import { TradingBadge } from "@/components/ui/trading-badge";
 import { TradingButton } from "@/components/ui/trading-button";
 import { LineChart, TrendingUp, Activity, AlertTriangle, Target, Zap } from "lucide-react";
+import { createChart, ColorType, CrosshairMode } from "lightweight-charts";
 
 // --- Types
 interface Candle { t: number; o: number; h: number; l: number; c: number; v: number }
@@ -113,12 +114,25 @@ function adx(candles: Candle[], period = 14){
 
 // --- Component
 export default function BTCTradingDashboard(){
+  // Chart refs
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const chartRef = useRef<any>(null);
+  const candleSeries = useRef<any>(null);
+  const ema50Series = useRef<any>(null);
+  const ema200Series = useRef<any>(null);
+  const donHiSeries = useRef<any>(null);
+  const donLoSeries = useRef<any>(null);
   const [symbol, setSymbol] = useState<string>("BTCUSDT");
   const [timeframe, setTimeframe] = useState<string>("1m");
   const [candles, setCandles] = useState<Candle[]>([]);
   const [signals, setSignals] = useState<Signal[]>([]);
   const [lastPrice, setLastPrice] = useState<number>(0);
   const [stats, setStats] = useState<{ change: number; high: number; low: number } | null>(null);
+
+  // Chart overlay toggles
+  const [showEMA50, setShowEMA50] = useState(true);
+  const [showEMA200, setShowEMA200] = useState(true);
+  const [showDon, setShowDon] = useState(true);
 
   // Risk panel state
   const [equity, setEquity] = useState<number>(10000);
@@ -130,6 +144,7 @@ export default function BTCTradingDashboard(){
 
   const wsKline = useRef<WebSocket | null>(null);
   const wsDepth = useRef<WebSocket | null>(null);
+  const wsLiq = useRef<WebSocket | null>(null);
 
   // Heatmap (liquidations)
   const heatCanvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -145,6 +160,61 @@ export default function BTCTradingDashboard(){
   type AIDir = "LONG" | "SHORT" | "FLAT";
   const [ai, setAi] = useState<{ dir: AIDir; score: number; conf: number; reasons: string[] }>({ dir: "FLAT", score: 0.5, conf: 0.0, reasons: [] });
 
+  // --- Initialize chart
+  useEffect(() => {
+    if(!containerRef.current) return;
+    
+    const chart = createChart(containerRef.current, {
+      width: containerRef.current.clientWidth,
+      height: 440,
+      layout: { 
+        background: { type: ColorType.Solid, color: "hsl(222, 84%, 5%)" }, 
+        textColor: "hsl(215, 20%, 65%)" 
+      },
+      grid: { 
+        vertLines: { color: "hsl(215, 28%, 17%)" }, 
+        horzLines: { color: "hsl(215, 28%, 17%)" } 
+      },
+      crosshair: { mode: CrosshairMode.Normal },
+      rightPriceScale: { borderColor: "hsl(215, 25%, 27%)" },
+      timeScale: { borderColor: "hsl(215, 25%, 27%)" },
+    });
+
+    chartRef.current = chart;
+    // Create series using correct API
+    try {
+      candleSeries.current = (chart as any).addCandlestickSeries({ 
+        upColor: "#16a34a", 
+        downColor: "#dc2626", 
+        wickUpColor: "#16a34a", 
+        wickDownColor: "#dc2626", 
+        borderUpColor: "#16a34a", 
+        borderDownColor: "#dc2626" 
+      });
+      ema50Series.current = (chart as any).addLineSeries({ lineWidth: 2, color: "#38bdf8" });
+      ema200Series.current = (chart as any).addLineSeries({ lineWidth: 2, color: "#f59e0b" });
+      donHiSeries.current = (chart as any).addLineSeries({ lineWidth: 1, color: "#84cc16" });
+      donLoSeries.current = (chart as any).addLineSeries({ lineWidth: 1, color: "#ef4444" });
+    } catch (error) {
+      console.error("Chart series creation error:", error);
+    }
+
+    const resize = () => {
+      if (containerRef.current && chartRef.current) {
+        chartRef.current.applyOptions({ width: containerRef.current.clientWidth });
+      }
+    };
+    
+    window.addEventListener("resize", resize);
+    return () => { 
+      window.removeEventListener("resize", resize); 
+      if (chartRef.current) {
+        chartRef.current.remove(); 
+        chartRef.current = null;
+      }
+    };
+  }, []);
+
   // --- Fetch initial candles via REST
   useEffect(() => {
     let active = true;
@@ -157,6 +227,17 @@ export default function BTCTradingDashboard(){
         const parsed: Candle[] = data.map((d: any[]) => ({ t: d[0]/1000, o: +d[1], h: +d[2], l: +d[3], c: +d[4], v: +d[5] }));
         if(!active) return;
         setCandles(parsed);
+        
+        // Update chart with initial data
+        if (candleSeries.current && parsed.length > 0) {
+          candleSeries.current.setData(parsed.map(k => ({ 
+            time: k.t as any, 
+            open: k.o, 
+            high: k.h, 
+            low: k.l, 
+            close: k.c 
+          })));
+        }
         
         const url24h = `https://api.binance.com/api/v3/ticker/24hr?symbol=${symbol}`;
         const r2 = await fetch(url24h); 
@@ -187,11 +268,25 @@ export default function BTCTradingDashboard(){
         setLastPrice(+k.c);
         setCandles(prev => {
           const last = prev[prev.length-1];
+          let next: Candle[];
           if(last && cndl.t === last.t) {
-            return [...prev.slice(0,-1), cndl];
+            next = [...prev.slice(0,-1), cndl];
           } else {
-            return [...prev, cndl];
+            next = [...prev, cndl];
           }
+          
+          // Update chart in real-time
+          if (candleSeries.current) {
+            candleSeries.current.update({ 
+              time: cndl.t as any, 
+              open: cndl.o, 
+              high: cndl.h, 
+              low: cndl.l, 
+              close: cndl.c 
+            });
+          }
+          
+          return next;
         });
       } catch (err) {
         console.error("WebSocket kline error:", err);
@@ -238,6 +333,35 @@ export default function BTCTradingDashboard(){
     const adx14 = adx(candles, 14);
     return { ema50: ema50Arr, ema200: ema200Arr, rsi14: rsiArr, macdPack: macdObj, atr14, don, adx14 };
   }, [candles]);
+
+  // --- Paint overlays on chart
+  useEffect(() => {
+    if(!candles.length || !candleSeries.current) return;
+    
+    // EMA50
+    if (ema50Series.current) {
+      const ema50Data = candles.map((k, i) => ({ time: k.t as any, value: pack.ema50[i] })).filter(d => !isNaN(d.value));
+      ema50Series.current.setData(ema50Data);
+      ema50Series.current.applyOptions({ visible: showEMA50 });
+    }
+    
+    // EMA200
+    if (ema200Series.current) {
+      const ema200Data = candles.map((k, i) => ({ time: k.t as any, value: pack.ema200[i] })).filter(d => !isNaN(d.value));
+      ema200Series.current.setData(ema200Data);
+      ema200Series.current.applyOptions({ visible: showEMA200 });
+    }
+    
+    // Donchian channels
+    if (donHiSeries.current && donLoSeries.current) {
+      const donHiData = candles.map((k,i) => ({ time: k.t as any, value: pack.don.hi[i] })).filter(d => !isNaN(d.value));
+      const donLoData = candles.map((k,i) => ({ time: k.t as any, value: pack.don.lo[i] })).filter(d => !isNaN(d.value));
+      donHiSeries.current.setData(donHiData);
+      donLoSeries.current.setData(donLoData);
+      donHiSeries.current.applyOptions({ visible: showDon });
+      donLoSeries.current.applyOptions({ visible: showDon });
+    }
+  }, [candles, pack, showEMA50, showEMA200, showDon]);
 
   // --- Generate advanced signals on candle closes
   useEffect(() => {
@@ -339,6 +463,41 @@ export default function BTCTradingDashboard(){
     }, 1000);
     return () => clearInterval(timer);
   }, [heatCols]);
+
+  // --- Liquidations WebSocket (Binance Futures) 
+  useEffect(() => {
+    if(wsLiq.current){ wsLiq.current.close(); wsLiq.current = null; }
+    const stream = `${symbol.toLowerCase()}@forceOrder`;
+    const ws = new WebSocket(`wss://fstream.binance.com/ws/${stream}`);
+    wsLiq.current = ws;
+    
+    ws.onmessage = (ev) => {
+      try{
+        const e = JSON.parse(ev.data);
+        const o = e.o || e;
+        const price = parseFloat(o.ap || o.p);
+        const qty = parseFloat(o.l || o.q);
+        if(!price || !qty) return;
+        const notional = price * qty;
+        const center = lastPrice || price;
+        const rows = Math.floor((2*rangeUSD)/bucketUSD)+1;
+        const mid = Math.floor(rows/2);
+        const idx = Math.round((price - center)/bucketUSD) + mid;
+        if(idx>=0 && idx<rows){
+          const acc = accumRef.current;
+          acc.set(idx, (acc.get(idx)||0) + notional);
+        }
+        if(Math.abs(price - center) <= bucketUSD/2){
+          setLiqNear(prev => prev*0.8 + notional*0.2);
+        }
+      } catch(err) {
+        console.error("Liquidation stream error:", err);
+      }
+    };
+    
+    ws.onerror = (err) => console.error("Liquidation WebSocket error:", err);
+    return () => ws.close();
+  }, [symbol, lastPrice, rangeUSD, bucketUSD]);
 
   // --- KI Analyst (local heuristic + optional backend)
   function localHeuristic(): { dir: AIDir; score: number; conf: number; reasons: string[] }{
@@ -602,13 +761,22 @@ export default function BTCTradingDashboard(){
             <CardTitle>Price Chart</CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="w-full h-[400px] bg-chart-bg rounded-lg border border-border flex items-center justify-center">
-              <div className="text-center">
-                <LineChart className="h-12 w-12 text-muted-foreground mx-auto mb-2" />
-                <p className="text-muted-foreground">Interactive chart will be displayed here</p>
-                <p className="text-xs text-muted-foreground mt-1">
-                  Live price: ${lastPrice ? fmt(lastPrice, 2) : "Loading..."}
-                </p>
+            <div ref={containerRef} className="w-full h-[440px] rounded-lg border border-border" />
+            <div className="mt-3 grid grid-cols-2 md:grid-cols-6 gap-3">
+              <div className="flex items-center gap-2">
+                <Switch checked={showEMA50} onCheckedChange={setShowEMA50} id="ema50" />
+                <Label htmlFor="ema50" className="text-xs">EMA 50</Label>
+              </div>
+              <div className="flex items-center gap-2">
+                <Switch checked={showEMA200} onCheckedChange={setShowEMA200} id="ema200" />
+                <Label htmlFor="ema200" className="text-xs">EMA 200</Label>
+              </div>
+              <div className="flex items-center gap-2">
+                <Switch checked={showDon} onCheckedChange={setShowDon} id="don" />
+                <Label htmlFor="don" className="text-xs">Donchian 20</Label>
+              </div>
+              <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                Live: <span className="font-mono text-primary">${lastPrice ? fmt(lastPrice, 2) : "Loading..."}</span>
               </div>
             </div>
             <div className="mt-4 grid grid-cols-3 gap-4 text-sm">
