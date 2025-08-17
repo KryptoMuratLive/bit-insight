@@ -1,4 +1,3 @@
-
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -8,7 +7,6 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { LineChart } from "lucide-react";
-import { createChart, ColorType, CrosshairMode, ISeriesApi } from "lightweight-charts";
 
 // --- Types
 interface Candle { t: number; o: number; h: number; l: number; c: number; v: number }
@@ -65,7 +63,6 @@ function atr(candles: Candle[], period = 14): number[] {
     const tr = Math.max(c.h - c.l, Math.abs(c.h - prev.c), Math.abs(c.l - prev.c));
     trs.push(tr);
   }
-  // Wilder smoothing via EMA with alpha=1/period
   const k = 1/period;
   const out: number[] = [];
   let prev = trs[0]; out.push(prev);
@@ -97,7 +94,6 @@ function adx(candles: Candle[], period = 14){
     mdm.push(downMove>upMove && downMove>0 ? downMove : 0);
     tr.push(Math.max(h - l, Math.abs(h - pc), Math.abs(l - pc)));
   }
-  // Wilder smoothing
   const k = 1/period;
   function smooth(arr: number[]){
     const out:number[]=[]; let prev=arr[0]; out.push(prev);
@@ -110,20 +106,11 @@ function adx(candles: Candle[], period = 14){
   const dx = pdi.map((p,i)=>{
     const m = mdi[i]||0; const den = p + m; return den ? (100*Math.abs(p - m)/den) : 0;
   });
-  const adxArr = ema(dx, period); // acceptable approximation
+  const adxArr = ema(dx, period);
   return { adx: adxArr, pdi, mdi };
 }
 
-// --- Component
-function BTCTradingDashboard(){
-  const containerRef = useRef<HTMLDivElement | null>(null);
-  const candleSeries = useRef<ISeriesApi<"Candlestick"> | null>(null);
-  const ema50Series = useRef<ISeriesApi<"Line"> | null>(null);
-  const ema200Series = useRef<ISeriesApi<"Line"> | null>(null);
-  const donHiSeries = useRef<ISeriesApi<"Line"> | null>(null);
-  const donLoSeries = useRef<ISeriesApi<"Line"> | null>(null);
-  const priceLineSeries = useRef<ISeriesApi<"Line"> | null>(null);
-
+export default function BTCTradingDashboard(){
   const [symbol, setSymbol] = useState<string>("BTCUSDT");
   const [timeframe, setTimeframe] = useState<string>("1m");
   const [candles, setCandles] = useState<Candle[]>([]);
@@ -145,62 +132,16 @@ function BTCTradingDashboard(){
 
   const wsKline = useRef<WebSocket | null>(null);
   const wsDepth = useRef<WebSocket | null>(null);
-  const wsLiq = useRef<WebSocket | null>(null);
-
-  // Heatmap (liquidations)
-  const heatWrapRef = useRef<HTMLDivElement | null>(null);
-  const heatCanvasRef = useRef<HTMLCanvasElement | null>(null);
-  const [rangeUSD, setRangeUSD] = useState<number>(2000); // +/- around last price
-  const [bucketUSD, setBucketUSD] = useState<number>(25); // price bucket size
-  const [heatCols, setHeatCols] = useState<number>(180); // ~3 min at 1s steps
-  const [minNotional, setMinNotional] = useState<number>(10000); // USD filter
-  const [showBuys, setShowBuys] = useState<boolean>(true);
-  const [showSells, setShowSells] = useState<boolean>(true);
-  const [logScale, setLogScale] = useState<boolean>(true);
-
-  const accumBuyRef = useRef<Map<number, number>>(new Map());
-  const accumSellRef = useRef<Map<number, number>>(new Map());
-  const matBuyRef = useRef<Float32Array | null>(null);
-  const matSellRef = useRef<Float32Array | null>(null);
-  const dimsRef = useRef<{ rows: number; cols: number }>({ rows: 0, cols: 0 });
-  const tsRef = useRef<Float64Array | null>(null);
-  const [liqNear, setLiqNear] = useState<number>(0);
-  const [hover, setHover] = useState<{x:number,y:number,row:number,col:number,price:number,buy:number,sell:number,ts:number}|null>(null);
 
   // KI-Analyst state
   type AIDir = "LONG" | "SHORT" | "FLAT";
   const [ai, setAi] = useState<{ dir: AIDir; score: number; conf: number; reasons: string[] }>({ dir: "FLAT", score: 0.5, conf: 0.0, reasons: [] });
 
-  // --- Initialize chart
-  useEffect(() => {
-    if(!containerRef.current) return;
-    const chart = createChart(containerRef.current, {
-      width: containerRef.current.clientWidth,
-      height: 440,
-      layout: { background: { type: ColorType.Solid, color: "#0b0f1a" }, textColor: "#cbd5e1" },
-      grid: { vertLines: { color: "#19202a" }, horzLines: { color: "#19202a" } },
-      crosshair: { mode: CrosshairMode.Normal },
-      rightPriceScale: { borderColor: "#1f2937" },
-      timeScale: { borderColor: "#1f2937" },
-    });
-
-    candleSeries.current = chart.addCandlestickSeries({ upColor: "#16a34a", downColor: "#dc2626", wickUpColor: "#16a34a", wickDownColor: "#dc2626", borderUpColor: "#16a34a", borderDownColor: "#dc2626" });
-    ema50Series.current = chart.addLineSeries({ lineWidth: 2, color: "#38bdf8" });
-    ema200Series.current = chart.addLineSeries({ lineWidth: 2, color: "#f59e0b" });
-    donHiSeries.current = chart.addLineSeries({ lineWidth: 1, color: "#84cc16" });
-    donLoSeries.current = chart.addLineSeries({ lineWidth: 1, color: "#ef4444" });
-    priceLineSeries.current = chart.addLineSeries({ lineWidth: 1, color: "#94a3b8" });
-
-    const resize = () => chart.applyOptions({ width: containerRef.current?.clientWidth || 800 });
-    window.addEventListener("resize", resize);
-    return () => { window.removeEventListener("resize", resize); chart.remove(); };
-  }, []);
-
   // --- Fetch initial candles via REST
   useEffect(() => {
     let active = true;
     async function load(){
-      const limit = 500; // enough for indicators
+      const limit = 500;
       const url = `https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=${timeframe}&limit=${limit}`;
       const r = await fetch(url);
       const data = await r.json();
@@ -211,7 +152,6 @@ function BTCTradingDashboard(){
       const r2 = await fetch(url24h); const s = await r2.json();
       setStats({ change: +s.priceChangePercent, high: +s.highPrice, low: +s.lowPrice });
       setLastPrice(parsed[parsed.length-1]?.c || 0);
-      candleSeries.current?.setData(parsed.map(k => ({ time: k.t as any, open: k.o, high: k.h, low: k.l, close: k.c })));
     }
     load();
     return () => { active = false };
@@ -220,13 +160,13 @@ function BTCTradingDashboard(){
   // --- WebSocket live updates (kline)
   useEffect(() => {
     if(wsKline.current) { wsKline.current.close(); wsKline.current = null; }
-    const stream = `${symbol.toLowerCase()}@kline_${timeframe}`; // e.g. btcusdt@kline_1m
+    const stream = `${symbol.toLowerCase()}@kline_${timeframe}`;
     const ws = new WebSocket(`wss://stream.binance.com:9443/ws/${stream}`);
     wsKline.current = ws;
 
     ws.onmessage = (ev) => {
       const msg = JSON.parse(ev.data);
-      if(!msg.k) return; // kline event
+      if(!msg.k) return;
       const k = msg.k;
       const cndl: Candle = { t: Math.floor(k.t/1000), o: +k.o, h: +k.h, l: +k.l, c: +k.c, v: +k.v };
       setLastPrice(+k.c);
@@ -234,7 +174,6 @@ function BTCTradingDashboard(){
         const last = prev[prev.length-1];
         let next: Candle[];
         if(last && cndl.t === last.t) { next = [...prev.slice(0,-1), cndl]; } else { next = [...prev, cndl]; }
-        candleSeries.current?.update({ time: cndl.t as any, open: cndl.o, high: cndl.h, low: cndl.l, close: cndl.c });
         return next;
       });
     };
@@ -242,7 +181,7 @@ function BTCTradingDashboard(){
     return () => ws.close();
   }, [symbol, timeframe]);
 
-  // --- WebSocket orderbook partial depth (top 20 levels)
+  // --- WebSocket orderbook partial depth
   useEffect(() => {
     if(wsDepth.current) { wsDepth.current.close(); wsDepth.current = null; }
     const stream = `${symbol.toLowerCase()}@depth20@100ms`;
@@ -276,20 +215,6 @@ function BTCTradingDashboard(){
     return { ema50: ema50Arr, ema200: ema200Arr, rsi14: rsiArr, macdPack: macdObj, atr14, don, adx14 };
   }, [candles]);
 
-  // --- Paint overlays
-  useEffect(() => {
-    if(!candles.length) return;
-    ema50Series.current?.setData(candles.map((k, i) => ({ time: k.t as any, value: pack.ema50[i] })));
-    ema50Series.current?.applyOptions({ visible: showEMA50 });
-    ema200Series.current?.setData(candles.map((k, i) => ({ time: k.t as any, value: pack.ema200[i] })));
-    ema200Series.current?.applyOptions({ visible: showEMA200 });
-    priceLineSeries.current?.setData(candles.map(k => ({ time: k.t as any, value: k.c })));
-    donHiSeries.current?.setData(candles.map((k,i)=>({ time: k.t as any, value: pack.don.hi[i] })));
-    donLoSeries.current?.setData(candles.map((k,i)=>({ time: k.t as any, value: pack.don.lo[i] })));
-    donHiSeries.current?.applyOptions({ visible: showDon });
-    donLoSeries.current?.applyOptions({ visible: showDon });
-  }, [candles, pack, showEMA50, showEMA200, showDon]);
-
   // --- Generate advanced signals on candle closes
   useEffect(() => {
     if(candles.length < 210) return;
@@ -301,14 +226,14 @@ function BTCTradingDashboard(){
     // EMA cross
     const prevCross = pack.ema50[i-1] - pack.ema200[i-1];
     const nowCross = pack.ema50[i] - pack.ema200[i];
-    if(prevCross < 0 && nowCross > 0) newSignals.push({ time: c.t, type: "BUY", rule: "Golden Cross (EMA50>EMA200)", price: c.c, adx: pack.adx14.adx[i], atr: pack.atr14[i] });
-    if(prevCross > 0 && nowCross < 0) newSignals.push({ time: c.t, type: "SELL", rule: "Death Cross (EMA50<EMA200)", price: c.c, adx: pack.adx14.adx[i], atr: pack.atr14[i] });
+    if(prevCross < 0 && nowCross > 0) newSignals.push({ time: c.t, type: "BUY", rule: "Golden Cross (EMA50&gt;EMA200)", price: c.c, adx: pack.adx14.adx[i], atr: pack.atr14[i] });
+    if(prevCross > 0 && nowCross < 0) newSignals.push({ time: c.t, type: "SELL", rule: "Death Cross (EMA50&lt;EMA200)", price: c.c, adx: pack.adx14.adx[i], atr: pack.atr14[i] });
 
     // Donchian breakout with ADX filter
     const brokeUp = c.c > pack.don.hi[i-1] && pack.adx14.adx[i] > 20;
     const brokeDn = c.c < pack.don.lo[i-1] && pack.adx14.adx[i] > 20;
-    if(brokeUp) newSignals.push({ time: c.t, type: "BUY", rule: "Donchian20 Breakout + ADX>20", price: c.c, adx: pack.adx14.adx[i], atr: pack.atr14[i] });
-    if(brokeDn) newSignals.push({ time: c.t, type: "SELL", rule: "Donchian20 Breakdown + ADX>20", price: c.c, adx: pack.adx14.adx[i], atr: pack.atr14[i] });
+    if(brokeUp) newSignals.push({ time: c.t, type: "BUY", rule: "Donchian20 Breakout + ADX&gt;20", price: c.c, adx: pack.adx14.adx[i], atr: pack.atr14[i] });
+    if(brokeDn) newSignals.push({ time: c.t, type: "SELL", rule: "Donchian20 Breakdown + ADX&gt;20", price: c.c, adx: pack.adx14.adx[i], atr: pack.atr14[i] });
 
     if(newSignals.length) setSignals(prev => [...newSignals.reverse(), ...prev].slice(0, 100));
   }, [candles, pack]);
@@ -316,10 +241,10 @@ function BTCTradingDashboard(){
   // --- Risk calculations
   const iLast = candles.length - 1;
   const lastAtr = iLast>=0 ? (pack.atr14[iLast] || 0) : 0;
-  const slDistance = lastAtr * atrMult; // in price
+  const slDistance = lastAtr * atrMult;
   const riskAmt = equity * (riskPct/100);
-  const qty = slDistance > 0 ? riskAmt / slDistance : 0; // base asset qty
-  const qtyRounded = Math.max(0, Math.floor(qty * 1e4) / 1e4); // 0.0001 step
+  const qty = slDistance > 0 ? riskAmt / slDistance : 0;
+  const qtyRounded = Math.max(0, Math.floor(qty * 1e4) / 1e4);
   const stopPriceBuy = lastPrice ? lastPrice - slDistance : 0;
   const stopPriceSell = lastPrice ? lastPrice + slDistance : 0;
   const tp1Buy = lastPrice ? lastPrice + slDistance : 0;
@@ -330,7 +255,7 @@ function BTCTradingDashboard(){
   // --- Stubs for AI score and alerts
   async function fetchAIScore(){
     try {
-      const res = await fetch("/api/infer", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ symbol, timeframe, features: { lastPrice, atr: lastAtr, adx: pack.adx14.adx[iLast]||0, obImb: ob.imb, liqNear } }) });
+      const res = await fetch("/api/infer", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ symbol, timeframe, features: { lastPrice, atr: lastAtr, adx: pack.adx14.adx[iLast]||0, obImb: ob.imb } }) });
       if(!res.ok) throw new Error("no backend");
       const json = await res.json();
       return typeof json.score === "number" ? json.score : null;
@@ -343,179 +268,6 @@ function BTCTradingDashboard(){
       alert("Alarm gesendet (Webhook Stub)");
     } catch { alert("Alarm-Endpoint nicht erreichbar") }
   }
-
-  // --- Heatmap matrix init
-  useEffect(() => {
-    const rows = Math.floor((2*rangeUSD)/bucketUSD)+1;
-    const cols = heatCols;
-    dimsRef.current = { rows, cols };
-    matBuyRef.current = new Float32Array(rows*cols);
-    matSellRef.current = new Float32Array(rows*cols);
-    tsRef.current = new Float64Array(cols);
-  }, [rangeUSD, bucketUSD, heatCols]);
-
-  // --- Heatmap draw loop
-  useEffect(() => {
-    const timer = setInterval(() => {
-      const buy = matBuyRef.current; const sell = matSellRef.current; const dims = dimsRef.current; const cvs = heatCanvasRef.current; const ts = tsRef.current;
-      if(!buy || !sell || !cvs || !ts) { accumBuyRef.current.clear(); accumSellRef.current.clear(); return; }
-      const { rows, cols } = dims;
-      // shift left
-      for(let r=0;r<rows;r++){
-        const base = r*cols;
-        for(let c=0;c<cols-1;c++){ buy[base+c] = buy[base+c+1]; sell[base+c] = sell[base+c+1]; }
-        buy[base+cols-1] = 0; sell[base+cols-1] = 0;
-      }
-      for(let c=0;c<cols-1;c++){ ts[c] = ts[c+1]; }
-      ts[cols-1] = Date.now();
-
-      // write latest accumulation with threshold
-      const writeAcc = (acc: Map<number, number>, target: Float32Array) => {
-        acc.forEach((val, idx) => {
-          if(idx>=0 && idx<rows && val>=minNotional){ target[idx*cols + (cols-1)] = val; }
-        });
-        acc.clear();
-      };
-      writeAcc(accumBuyRef.current, buy);
-      writeAcc(accumSellRef.current, sell);
-
-      // draw
-      const ctx = cvs.getContext('2d'); if(!ctx) return;
-      const W = cvs.width, H = cvs.height;
-      ctx.clearRect(0,0,W,H);
-      const marginLeft = 56; const marginBottom = 18; const plotW = W - marginLeft; const plotH = H - marginBottom;
-
-      // compute max
-      let maxBuy = 0, maxSell = 0; const len = buy.length;
-      for(let i=0;i<len;i++){ if(buy[i]>maxBuy) maxBuy = buy[i]; if(sell[i]>maxSell) maxSell = sell[i]; }
-
-      const colsW = plotW; const colW = colsW/cols; const rowH = plotH/rows;
-
-      // grid + price labels
-      ctx.fillStyle = '#94a3b8';
-      ctx.font = '10px ui-monospace, SFMono-Regular, Menlo, monospace';
-      ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
-      const center = lastPrice || 0;
-      const mid = Math.floor(rows/2);
-      const ticks = 8; const step = Math.max(1, Math.round(rows/ticks));
-      ctx.strokeStyle = '#1f2937'; ctx.lineWidth = 1;
-      for(let r=0;r<rows;r+=step){
-        const price = center + (r - mid) * bucketUSD;
-        const y = plotH - (r+0.5)*rowH;
-        ctx.fillText(fmt(price,0), marginLeft-6, y);
-        ctx.globalAlpha = 0.25; ctx.beginPath(); ctx.moveTo(marginLeft, y); ctx.lineTo(W, y); ctx.stroke(); ctx.globalAlpha = 1;
-      }
-      // time labels
-      ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic';
-      const t0 = ts[0]; const t1 = ts[Math.floor(cols/2)]; const t2 = ts[cols-1];
-      const tfmt = (t:number)=> t? new Date(t).toLocaleTimeString(): '';
-      ctx.fillText(tfmt(t0), marginLeft + 0*colW, H-2);
-      ctx.fillText(tfmt(t1), marginLeft + (cols/2)*colW, H-2);
-      ctx.fillText(tfmt(t2), marginLeft + (cols-1)*colW, H-2);
-
-      // center line
-      ctx.strokeStyle = '#64748b'; ctx.lineWidth = 1; ctx.beginPath();
-      ctx.moveTo(marginLeft, plotH/2); ctx.lineTo(W, plotH/2); ctx.stroke();
-
-      // draw sells (red) and buys (green)
-      for(let r=0;r<rows;r++){
-        for(let c=0;c<cols;c++){
-          const vS = sell[r*cols+c]; const vB = buy[r*cols+c];
-          if(vS>0 && showSells){
-            const a = (logScale? Math.log1p(vS)/Math.log1p(maxSell||1) : vS/(maxSell||1));
-            if(a>0){ ctx.fillStyle = `rgba(239,68,68,${Math.min(1,a)})`; ctx.fillRect(marginLeft + c*colW, plotH-(r+1)*rowH, Math.ceil(colW), Math.ceil(rowH)); }
-          }
-          if(vB>0 && showBuys){
-            const a = (logScale? Math.log1p(vB)/Math.log1p(maxBuy||1) : vB/(maxBuy||1));
-            if(a>0){ ctx.fillStyle = `rgba(16,185,129,${Math.min(1,a)})`; ctx.fillRect(marginLeft + c*colW, plotH-(r+1)*rowH, Math.ceil(colW), Math.ceil(rowH)); }
-          }
-        }
-      }
-
-      // hover tooltip
-      if(hover){
-        const { x, y } = hover;
-        ctx.fillStyle = '#0b1220'; ctx.strokeStyle = '#94a3b8'; ctx.lineWidth = 1;
-        const boxW = 150, boxH = 56; const bx = Math.min(W-boxW-4, Math.max(marginLeft, x+8)); const by = Math.max(4, y- boxH - 8);
-        ctx.globalAlpha = 0.9; ctx.fillRect(bx, by, boxW, boxH); ctx.globalAlpha = 1; ctx.strokeRect(bx, by, boxW, boxH);
-        ctx.fillStyle = '#cbd5e1'; ctx.font = '11px ui-monospace, monospace'; ctx.textAlign = 'left'; ctx.textBaseline = 'top';
-        ctx.fillText(`Preis: ${fmt(hover.price,2)}`, bx+6, by+6);
-        ctx.fillText(`Buy: $${fmt(hover.buy,0)}  Sell: $${fmt(hover.sell,0)}`, bx+6, by+20);
-        if(hover.ts){ ctx.fillText(new Date(hover.ts).toLocaleTimeString(), bx+6, by+34); }
-      }
-
-      // legend
-      ctx.fillStyle = '#cbd5e1'; ctx.font = '10px ui-monospace, monospace'; ctx.textAlign = 'left'; ctx.textBaseline = 'top';
-      ctx.fillText('Buys', marginLeft+6, 6); ctx.fillStyle = 'rgba(16,185,129,0.8)'; ctx.fillRect(marginLeft+40, 8, 16, 8);
-      ctx.fillStyle = '#cbd5e1'; ctx.fillText('Sells', marginLeft+66, 6); ctx.fillStyle = 'rgba(239,68,68,0.8)'; ctx.fillRect(marginLeft+108, 8, 16, 8);
-      ctx.fillStyle = '#94a3b8'; ctx.fillText(logScale? 'log scale' : 'linear', marginLeft+130, 6);
-
-    }, 1000);
-    return () => clearInterval(timer);
-  }, [heatCols, showBuys, showSells, logScale, lastPrice, bucketUSD, rangeUSD, minNotional, hover]);
-
-  // pointer handlers for tooltip
-  useEffect(() => {
-    const cvs = heatCanvasRef.current; const dims = dimsRef.current; const ts = tsRef.current;
-    if(!cvs || !dims || !ts) return;
-    const handle = (clientX:number, clientY:number) => {
-      const rect = cvs.getBoundingClientRect();
-      const x = clientX - rect.left; const y = clientY - rect.top;
-      const marginLeft = 56; const marginBottom = 18; const plotW = cvs.width - marginLeft; const plotH = cvs.height - marginBottom;
-      const { rows, cols } = dims;
-      if(x < marginLeft || x > cvs.width || y < 0 || y > plotH){ setHover(null); return; }
-      const col = Math.floor((x - marginLeft) / (plotW/cols));
-      const row = Math.floor((plotH - y) / (plotH/rows));
-      const mid = Math.floor(rows/2);
-      const price = (lastPrice || 0) + (row - mid) * bucketUSD;
-      const buy = matBuyRef.current ? matBuyRef.current[row*cols + col] || 0 : 0;
-      const sell = matSellRef.current ? matSellRef.current[row*cols + col] || 0 : 0;
-      const tsVal = ts[col] || 0;
-      setHover({ x, y, row, col, price, buy, sell, ts: tsVal });
-    };
-    const onMove = (e: MouseEvent) => handle(e.clientX, e.clientY);
-    const onLeave = () => setHover(null);
-    const onTouch = (e: TouchEvent) => { if(e.touches[0]) handle(e.touches[0].clientX, e.touches[0].clientY); };
-    cvs.addEventListener('mousemove', onMove);
-    cvs.addEventListener('mouseleave', onLeave);
-    cvs.addEventListener('touchstart', onTouch, { passive: true });
-    cvs.addEventListener('touchmove', onTouch, { passive: true });
-    return () => {
-      cvs.removeEventListener('mousemove', onMove);
-      cvs.removeEventListener('mouseleave', onLeave);
-      cvs.removeEventListener('touchstart', onTouch);
-      cvs.removeEventListener('touchmove', onTouch);
-    };
-  }, [lastPrice, bucketUSD]);
-
-  // --- Liquidations WebSocket (Binance Futures)
-  useEffect(() => {
-    if(wsLiq.current){ wsLiq.current.close(); wsLiq.current = null; }
-    const stream = `${symbol.toLowerCase()}@forceOrder`;
-    const ws = new WebSocket(`wss://fstream.binance.com/ws/${stream}`);
-    wsLiq.current = ws;
-    ws.onmessage = (ev) => {
-      try{
-        const e = JSON.parse(ev.data);
-        const o = e.o || e; // object shape
-        const price = parseFloat(o.ap || o.p);
-        const qty = parseFloat(o.l || o.q);
-        const side = (o.S || o.s || '').toString().toUpperCase();
-        if(!price || !qty) return;
-        const notional = price * qty;
-        const rows = Math.floor((2*rangeUSD)/bucketUSD)+1; const mid = Math.floor(rows/2);
-        const center = lastPrice || price;
-        const idx = Math.round((price - center)/bucketUSD) + mid;
-        if(idx>=0 && idx<rows){
-          if(side === 'BUY'){ const acc = accumBuyRef.current; acc.set(idx, (acc.get(idx)||0) + notional); }
-          else if(side === 'SELL'){ const acc = accumSellRef.current; acc.set(idx, (acc.get(idx)||0) + notional); }
-          else { const acc = accumSellRef.current; acc.set(idx, (acc.get(idx)||0) + notional); }
-        }
-        if(Math.abs(price - center) <= bucketUSD/2){ setLiqNear(prev => prev*0.8 + notional*0.2); }
-      } catch {}
-    };
-    return () => ws.close();
-  }, [symbol, lastPrice, rangeUSD, bucketUSD]);
 
   // --- KI Analyst (local heuristic + optional backend)
   function localHeuristic(): { dir: AIDir; score: number; conf: number; reasons: string[] }{
@@ -540,17 +292,11 @@ function BTCTradingDashboard(){
 
     if(mac>0){ score += 0.05; reasons.push("MACD bull"); } else { score -= 0.05; reasons.push("MACD bear"); }
 
-    // RSI extremes
     if(rsiv<30){ score += 0.04; reasons.push("RSI<30"); }
     if(rsiv>70){ score -= 0.04; reasons.push("RSI>70"); }
 
-    // Orderbook imbalance
     score += Math.max(-0.05, Math.min(0.05, (imb||0)*0.1));
     if(Math.abs(imb)>0.1) reasons.push(`OB ${Math.sign(imb)>0?"Bid":"Ask"}`);
-
-    // Liquidations near spot
-    const liqBoost = Math.max(-0.05, Math.min(0.05, (liqNear/1_000_000)*0.05));
-    if(liqNear>0) { score += liqBoost; reasons.push(`Liq ${Math.round(liqNear/1000)}k`); }
 
     score = Math.max(0, Math.min(1, score));
 
@@ -568,7 +314,6 @@ function BTCTradingDashboard(){
     setAi({ dir, score: blendedScore, conf: base.conf, reasons: ["heuristic", "backend"].concat(base.reasons) });
   }
 
-  // --- UI helpers
   const changeTf = (tf: string) => setTimeframe(tf);
   const tfList = ["1m","5m","15m","1h","4h","1d"];
 
@@ -598,46 +343,19 @@ function BTCTradingDashboard(){
         </div>
       </div>
 
-      <div className="grid grid-cols-1">
-        <Card>
-          <CardHeader className="pb-2"><CardTitle>Liquidations Heatmap (Futures)</CardTitle></CardHeader>
-          <CardContent>
-            <div className="grid grid-cols-2 md:grid-cols-6 gap-3 mb-3 items-end">
-              <div>
-                <Label>Range ±USD</Label>
-                <Input type="number" value={rangeUSD} onChange={e=>setRangeUSD(parseFloat(e.target.value)||0)} />
-              </div>
-              <div>
-                <Label>Bucket USD</Label>
-                <Input type="number" value={bucketUSD} onChange={e=>setBucketUSD(parseFloat(e.target.value)||1)} />
-              </div>
-              <div>
-                <Label>Spalten</Label>
-                <Input type="number" value={heatCols} onChange={e=>setHeatCols(parseInt(e.target.value)||60)} />
-              </div>
-              <div>
-                <Label>Min Notional $</Label>
-                <Input type="number" value={minNotional} onChange={e=>setMinNotional(parseFloat(e.target.value)||0)} />
-              </div>
-              <div className="flex items-center gap-2"><Switch checked={showBuys} onCheckedChange={setShowBuys} id="showB" /><Label htmlFor="showB">Buys</Label></div>
-              <div className="flex items-center gap-2"><Switch checked={showSells} onCheckedChange={setShowSells} id="showS" /><Label htmlFor="showS">Sells</Label></div>
-              <div className="flex items-center gap-2"><Switch checked={logScale} onCheckedChange={setLogScale} id="log" /><Label htmlFor="log">Log-Skala</Label></div>
-              <div className="text-xs text-muted-foreground col-span-2 md:col-span-6">Tippen oder hovern zeigt Preis, Volumen und Zeit an. Grün = Buy-Liq, Rot = Sell-Liq.</div>
-            </div>
-            <div ref={heatWrapRef} className="w-full overflow-hidden rounded border border-border">
-              <canvas ref={heatCanvasRef} width={980} height={300} className="w-full h-[300px] block bg-[#0b0f1a]" />
-            </div>
-          </CardContent>
-        </Card>
-      </div>
-
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         <Card className="lg:col-span-2">
           <CardHeader className="pb-2">
             <CardTitle>Chart</CardTitle>
           </CardHeader>
           <CardContent>
-            <div ref={containerRef} className="w-full" />
+            <div className="w-full h-[440px] bg-slate-900 rounded border border-border flex items-center justify-center">
+              <div className="text-center text-muted-foreground">
+                <LineChart className="h-12 w-12 mx-auto mb-2" />
+                <p>Chart wird geladen...</p>
+                <p className="text-sm">Preis: {lastPrice ? fmt(lastPrice, 2) : "-"}</p>
+              </div>
+            </div>
             <div className="mt-3 grid grid-cols-2 md:grid-cols-6 gap-3">
               <div className="flex items-center gap-2"><Switch checked={showEMA50} onCheckedChange={setShowEMA50} id="ema50" /><Label htmlFor="ema50">EMA 50</Label></div>
               <div className="flex items-center gap-2"><Switch checked={showEMA200} onCheckedChange={setShowEMA200} id="ema200" /><Label htmlFor="ema200">EMA 200</Label></div>
@@ -759,7 +477,6 @@ function BTCTradingDashboard(){
         </Card>
       </div>
 
-      {/* KI Analyst Card */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         <Card className="lg:col-span-3">
           <CardHeader className="pb-2"><CardTitle>KI‑Analyst</CardTitle></CardHeader>
@@ -786,8 +503,8 @@ function BTCTradingDashboard(){
                 <div className="font-mono">{fmt(pack.adx14.adx[iLast]||0,1)}</div>
               </div>
               <div>
-                <div className="text-xs text-muted-foreground">Liq@Spot</div>
-                <div className="font-mono">{fmt(liqNear/1000,1)}k</div>
+                <div className="text-xs text-muted-foreground">Orderbook</div>
+                <div className="font-mono">{fmt((ob.imb||0)*100,1)}%</div>
               </div>
             </div>
             <div className="text-xs text-muted-foreground">Begründungen: {ai.reasons.join(", ") || "—"}</div>
@@ -825,7 +542,7 @@ function BTCTradingDashboard(){
         <CardHeader className="pb-2"><CardTitle>Strategie & Hinweise</CardTitle></CardHeader>
         <CardContent className="space-y-2 text-sm">
           <ul className="list-disc pl-5 space-y-1">
-            <li>Donchian20 Breakouts nur bei ADX>20 filtern. Range = Mean-Reversion, Trend = Breakout.</li>
+            <li>Donchian20 Breakouts nur bei ADX&gt;20 filtern. Range = Mean-Reversion, Trend = Breakout.</li>
             <li>Orderbuch-/Liquidationsdaten sind Kontext, keine alleinigen Trigger.</li>
             <li>Positionsgröße aus ATR-basiertem Stop. Kein Finanzrat.</li>
           </ul>
@@ -835,5 +552,3 @@ function BTCTradingDashboard(){
     </div>
   );
 }
-
-export default BTCTradingDashboard;
