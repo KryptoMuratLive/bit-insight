@@ -1,4 +1,54 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
+
+// TradingView Widget Component
+function TradingViewWidget({ symbol, interval }: { symbol: string; interval: string }) {
+  const container = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!container.current) return;
+    
+    const script = document.createElement("script");
+    script.src = "https://s3.tradingview.com/external-embedding/embed-widget-advanced-chart.js";
+    script.type = "text/javascript";
+    script.async = true;
+    script.innerHTML = JSON.stringify({
+      autosize: true,
+      symbol: `BINANCE:${symbol}`,
+      interval: interval,
+      timezone: "Etc/UTC",
+      theme: "dark",
+      style: "1",
+      locale: "de",
+      enable_publishing: false,
+      withdateranges: true,
+      range: "1D",
+      hide_side_toolbar: false,
+      allow_symbol_change: true,
+      details: true,
+      hotlist: true,
+      calendar: true,
+      studies: [
+        "STD;EMA",
+        "STD;MACD",
+        "STD;RSI"
+      ],
+      container_id: "tradingview_chart"
+    });
+
+    container.current.innerHTML = "";
+    container.current.appendChild(script);
+  }, [symbol, interval]);
+
+  return (
+    <div className="tradingview-widget-container" style={{ height: "440px", width: "100%" }}>
+      <div 
+        ref={container} 
+        id="tradingview_chart" 
+        style={{ height: "calc(100% - 32px)", width: "100%" }}
+      />
+    </div>
+  );
+}
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
@@ -349,13 +399,7 @@ export default function BTCTradingDashboard(){
             <CardTitle>Chart</CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="w-full h-[440px] bg-slate-900 rounded border border-border flex items-center justify-center">
-              <div className="text-center text-muted-foreground">
-                <LineChart className="h-12 w-12 mx-auto mb-2" />
-                <p>Chart wird geladen...</p>
-                <p className="text-sm">Preis: {lastPrice ? fmt(lastPrice, 2) : "-"}</p>
-              </div>
-            </div>
+            <TradingViewWidget symbol={symbol} interval={timeframe} />
             <div className="mt-3 grid grid-cols-2 md:grid-cols-6 gap-3">
               <div className="flex items-center gap-2"><Switch checked={showEMA50} onCheckedChange={setShowEMA50} id="ema50" /><Label htmlFor="ema50">EMA 50</Label></div>
               <div className="flex items-center gap-2"><Switch checked={showEMA200} onCheckedChange={setShowEMA200} id="ema200" /><Label htmlFor="ema200">EMA 200</Label></div>
