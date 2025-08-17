@@ -1,3 +1,4 @@
+
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -5,9 +6,9 @@ import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Input } from "@/components/ui/input";
-import { TradingBadge } from "@/components/ui/trading-badge";
-import { TradingButton } from "@/components/ui/trading-button";
-import { LineChart, TrendingUp, Activity, AlertTriangle, Target, Zap } from "lucide-react";
+import { Badge } from "@/components/ui/badge";
+import { LineChart } from "lucide-react";
+import { createChart, ColorType, CrosshairMode, ISeriesApi } from "lightweight-charts";
 
 // --- Types
 interface Candle { t: number; o: number; h: number; l: number; c: number; v: number }
@@ -64,6 +65,7 @@ function atr(candles: Candle[], period = 14): number[] {
     const tr = Math.max(c.h - c.l, Math.abs(c.h - prev.c), Math.abs(c.l - prev.c));
     trs.push(tr);
   }
+  // Wilder smoothing via EMA with alpha=1/period
   const k = 1/period;
   const out: number[] = [];
   let prev = trs[0]; out.push(prev);
@@ -95,6 +97,7 @@ function adx(candles: Candle[], period = 14){
     mdm.push(downMove>upMove && downMove>0 ? downMove : 0);
     tr.push(Math.max(h - l, Math.abs(h - pc), Math.abs(l - pc)));
   }
+  // Wilder smoothing
   const k = 1/period;
   function smooth(arr: number[]){
     const out:number[]=[]; let prev=arr[0]; out.push(prev);
@@ -107,14 +110,19 @@ function adx(candles: Candle[], period = 14){
   const dx = pdi.map((p,i)=>{
     const m = mdi[i]||0; const den = p + m; return den ? (100*Math.abs(p - m)/den) : 0;
   });
-  const adxArr = ema(dx, period);
+  const adxArr = ema(dx, period); // acceptable approximation
   return { adx: adxArr, pdi, mdi };
 }
 
 // --- Component
 function BTCTradingDashboard(){
-  // Chart refs
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const candleSeries = useRef<ISeriesApi<"Candlestick"> | null>(null);
+  const ema50Series = useRef<ISeriesApi<"Line"> | null>(null);
+  const ema200Series = useRef<ISeriesApi<"Line"> | null>(null);
+  const donHiSeries = useRef<ISeriesApi<"Line"> | null>(null);
+  const donLoSeries = useRef<ISeriesApi<"Line"> | null>(null);
+  const priceLineSeries = useRef<ISeriesApi<"Line"> | null>(null);
 
   const [symbol, setSymbol] = useState<string>("BTCUSDT");
   const [timeframe, setTimeframe] = useState<string>("1m");
@@ -123,7 +131,6 @@ function BTCTradingDashboard(){
   const [lastPrice, setLastPrice] = useState<number>(0);
   const [stats, setStats] = useState<{ change: number; high: number; low: number } | null>(null);
 
-  // Chart overlay toggles
   const [showEMA50, setShowEMA50] = useState(true);
   const [showEMA200, setShowEMA200] = useState(true);
   const [showDon, setShowDon] = useState(true);
@@ -141,18 +148,120 @@ function BTCTradingDashboard(){
   const wsLiq = useRef<WebSocket | null>(null);
 
   // Heatmap (liquidations)
+  const heatWrapRef = useRef<HTMLDivElement | null>(null);
   const heatCanvasRef = useRef<HTMLCanvasElement | null>(null);
-  const [rangeUSD, setRangeUSD] = useState<number>(2000);
-  const [bucketUSD, setBucketUSD] = useState<number>(25);
-  const [heatCols, setHeatCols] = useState<number>(180);
-  const accumRef = useRef<Map<number, number>>(new Map());
-  const matrixRef = useRef<Float32Array | null>(null);
-  const dimsRef = useRef<{ rows: number; cols: number }>({ rows: 0, cols: 0 });
-  const [liqNear, setLiqNear] = useState<number>(0);
+  const [rangeUSD, setRangeUSD] = useState<number>(2000); // +/- around last price
+  const [bucketUSD, setBucketUSD] = useState<number>(25); // price bucket size
+  const [heatCols, setHeatCols] = useState<number>(180); // ~3 min at 1s steps
+  const [minNotional, setMinNotional] = useState<number>(10000); // USD filter
+  const [showBuys, setShowBuys] = useState<boolean>(true);
+  const [showSells, setShowSells] = useState<boolean>(true);
+  const [logScale, setLogScale] = useState<boolean>(true);
 
-  // AI-Analyst state
+  const accumBuyRef = useRef<Map<number, number>>(new Map());
+  const accumSellRef = useRef<Map<number, number>>(new Map());
+  const matBuyRef = useRef<Float32Array | null>(null);
+  const matSellRef = useRef<Float32Array | null>(null);
+  const dimsRef = useRef<{ rows: number; cols: number }>({ rows: 0, cols: 0 });
+  const tsRef = useRef<Float64Array | null>(null);
+  const [liqNear, setLiqNear] = useState<number>(0);
+  const [hover, setHover] = useState<{x:number,y:number,row:number,col:number,price:number,buy:number,sell:number,ts:number}|null>(null);
+
+  // KI-Analyst state
   type AIDir = "LONG" | "SHORT" | "FLAT";
   const [ai, setAi] = useState<{ dir: AIDir; score: number; conf: number; reasons: string[] }>({ dir: "FLAT", score: 0.5, conf: 0.0, reasons: [] });
+
+  // --- Initialize chart
+  useEffect(() => {
+    if(!containerRef.current) return;
+    const chart = createChart(containerRef.current, {
+      width: containerRef.current.clientWidth,
+      height: 440,
+      layout: { background: { type: ColorType.Solid, color: "#0b0f1a" }, textColor: "#cbd5e1" },
+      grid: { vertLines: { color: "#19202a" }, horzLines: { color: "#19202a" } },
+      crosshair: { mode: CrosshairMode.Normal },
+      rightPriceScale: { borderColor: "#1f2937" },
+      timeScale: { borderColor: "#1f2937" },
+    });
+
+    candleSeries.current = chart.addCandlestickSeries({ upColor: "#16a34a", downColor: "#dc2626", wickUpColor: "#16a34a", wickDownColor: "#dc2626", borderUpColor: "#16a34a", borderDownColor: "#dc2626" });
+    ema50Series.current = chart.addLineSeries({ lineWidth: 2, color: "#38bdf8" });
+    ema200Series.current = chart.addLineSeries({ lineWidth: 2, color: "#f59e0b" });
+    donHiSeries.current = chart.addLineSeries({ lineWidth: 1, color: "#84cc16" });
+    donLoSeries.current = chart.addLineSeries({ lineWidth: 1, color: "#ef4444" });
+    priceLineSeries.current = chart.addLineSeries({ lineWidth: 1, color: "#94a3b8" });
+
+    const resize = () => chart.applyOptions({ width: containerRef.current?.clientWidth || 800 });
+    window.addEventListener("resize", resize);
+    return () => { window.removeEventListener("resize", resize); chart.remove(); };
+  }, []);
+
+  // --- Fetch initial candles via REST
+  useEffect(() => {
+    let active = true;
+    async function load(){
+      const limit = 500; // enough for indicators
+      const url = `https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=${timeframe}&limit=${limit}`;
+      const r = await fetch(url);
+      const data = await r.json();
+      const parsed: Candle[] = data.map((d: any[]) => ({ t: d[0]/1000, o: +d[1], h: +d[2], l: +d[3], c: +d[4], v: +d[5] }));
+      if(!active) return;
+      setCandles(parsed);
+      const url24h = `https://api.binance.com/api/v3/ticker/24hr?symbol=${symbol}`;
+      const r2 = await fetch(url24h); const s = await r2.json();
+      setStats({ change: +s.priceChangePercent, high: +s.highPrice, low: +s.lowPrice });
+      setLastPrice(parsed[parsed.length-1]?.c || 0);
+      candleSeries.current?.setData(parsed.map(k => ({ time: k.t as any, open: k.o, high: k.h, low: k.l, close: k.c })));
+    }
+    load();
+    return () => { active = false };
+  }, [symbol, timeframe]);
+
+  // --- WebSocket live updates (kline)
+  useEffect(() => {
+    if(wsKline.current) { wsKline.current.close(); wsKline.current = null; }
+    const stream = `${symbol.toLowerCase()}@kline_${timeframe}`; // e.g. btcusdt@kline_1m
+    const ws = new WebSocket(`wss://stream.binance.com:9443/ws/${stream}`);
+    wsKline.current = ws;
+
+    ws.onmessage = (ev) => {
+      const msg = JSON.parse(ev.data);
+      if(!msg.k) return; // kline event
+      const k = msg.k;
+      const cndl: Candle = { t: Math.floor(k.t/1000), o: +k.o, h: +k.h, l: +k.l, c: +k.c, v: +k.v };
+      setLastPrice(+k.c);
+      setCandles(prev => {
+        const last = prev[prev.length-1];
+        let next: Candle[];
+        if(last && cndl.t === last.t) { next = [...prev.slice(0,-1), cndl]; } else { next = [...prev, cndl]; }
+        candleSeries.current?.update({ time: cndl.t as any, open: cndl.o, high: cndl.h, low: cndl.l, close: cndl.c });
+        return next;
+      });
+    };
+
+    return () => ws.close();
+  }, [symbol, timeframe]);
+
+  // --- WebSocket orderbook partial depth (top 20 levels)
+  useEffect(() => {
+    if(wsDepth.current) { wsDepth.current.close(); wsDepth.current = null; }
+    const stream = `${symbol.toLowerCase()}@depth20@100ms`;
+    const ws = new WebSocket(`wss://stream.binance.com:9443/ws/${stream}`);
+    wsDepth.current = ws;
+    ws.onmessage = (ev) => {
+      const d: DepthUpdate = JSON.parse(ev.data);
+      if(!d || !d.bids || !d.asks) return;
+      const bids = d.bids.slice(0,20).map(([p,q])=>({p:+p,q:+q}));
+      const asks = d.asks.slice(0,20).map(([p,q])=>({p:+p,q:+q}));
+      const sumBid = bids.reduce((a,b)=>a+b.q,0);
+      const sumAsk = asks.reduce((a,b)=>a+b.q,0);
+      const imb = (sumBid - sumAsk) / Math.max(1e-8, (sumBid + sumAsk));
+      const bestBid = bids[0]?.p || 0;
+      const bestAsk = asks[0]?.p || 0;
+      setOb({ bid: bestBid, ask: bestAsk, sumBid, sumAsk, imb });
+    };
+    return () => ws.close();
+  }, [symbol]);
 
   // --- Indicator packs
   const pack = useMemo(() => {
@@ -167,140 +276,19 @@ function BTCTradingDashboard(){
     return { ema50: ema50Arr, ema200: ema200Arr, rsi14: rsiArr, macdPack: macdObj, atr14, don, adx14 };
   }, [candles]);
 
-  // --- Risk calculations
-  const iLast = candles.length - 1;
-  const lastAtr = iLast>=0 ? (pack.atr14[iLast] || 0) : 0;
-  const slDistance = lastAtr * atrMult;
-  const riskAmt = equity * (riskPct/100);
-  const qty = slDistance > 0 ? riskAmt / slDistance : 0;
-  const qtyRounded = Math.max(0, Math.floor(qty * 1e4) / 1e4);
-  const stopPriceBuy = lastPrice ? lastPrice - slDistance : 0;
-  const stopPriceSell = lastPrice ? lastPrice + slDistance : 0;
-  const tp1Buy = lastPrice ? lastPrice + slDistance : 0;
-  const tp2Buy = lastPrice ? lastPrice + 2*slDistance : 0;
-  const tp1Sell = lastPrice ? lastPrice - slDistance : 0;
-  const tp2Sell = lastPrice ? lastPrice - 2*slDistance : 0;
-
-  // --- Simple chart placeholder with price display  
+  // --- Paint overlays
   useEffect(() => {
-    if(!containerRef.current || !candles.length) return;
-    
-    const container = containerRef.current;
-    const currentPrice = lastPrice || 0;
-    const ema50Val = pack.ema50[iLast] || 0;
-    const ema200Val = pack.ema200[iLast] || 0;
-    const atrVal = lastAtr || 0;
-    const adxVal = pack.adx14.adx[iLast] || 0;
-    
-    container.innerHTML = `
-      <div style="width: 100%; height: 100%; background: hsl(222, 84%, 5%); border: 1px solid hsl(217, 33%, 17%); border-radius: 8px; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; padding: 32px;">
-        <div style="font-size: 2rem; font-weight: bold; margin-bottom: 8px; color: hsl(210, 40%, 98%);">$${currentPrice ? fmt(currentPrice, 2) : "Loading..."}</div>
-        <div style="font-size: 0.875rem; color: hsl(215, 20%, 65%); margin-bottom: 16px;">${symbol} Live Price</div>
-        <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 16px; font-size: 0.875rem; width: 100%; max-width: 400px;">
-          <div style="padding: 8px; border: 1px solid hsl(217, 33%, 17%); border-radius: 4px;">
-            <div style="font-size: 0.75rem; color: hsl(215, 20%, 65%);">EMA50</div>
-            <div style="font-family: monospace;">${ema50Val ? fmt(ema50Val, 2) : "-"}</div>
-          </div>
-          <div style="padding: 8px; border: 1px solid hsl(217, 33%, 17%); border-radius: 4px;">
-            <div style="font-size: 0.75rem; color: hsl(215, 20%, 65%);">EMA200</div>
-            <div style="font-family: monospace;">${ema200Val ? fmt(ema200Val, 2) : "-"}</div>
-          </div>
-          <div style="padding: 8px; border: 1px solid hsl(217, 33%, 17%); border-radius: 4px;">
-            <div style="font-size: 0.75rem; color: hsl(215, 20%, 65%);">ATR</div>
-            <div style="font-family: monospace;">${atrVal ? fmt(atrVal, 2) : "-"}</div>
-          </div>
-          <div style="padding: 8px; border: 1px solid hsl(217, 33%, 17%); border-radius: 4px;">
-            <div style="font-size: 0.75rem; color: hsl(215, 20%, 65%);">ADX</div>
-            <div style="font-family: monospace;">${adxVal ? fmt(adxVal, 1) : "-"}</div>
-          </div>
-        </div>
-        <div style="margin-top: 16px; font-size: 0.75rem; color: hsl(215, 20%, 65%);">Chart displays live technical indicators</div>
-      </div>
-    `;
-  }, [lastPrice, symbol, pack, iLast, lastAtr, candles]);
-
-  // --- Fetch initial candles via REST
-  useEffect(() => {
-    let active = true;
-    async function load(){
-      try {
-        const limit = 500;
-        const url = `https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=${timeframe}&limit=${limit}`;
-        const r = await fetch(url);
-        const data = await r.json();
-        const parsed: Candle[] = data.map((d: any[]) => ({ t: d[0]/1000, o: +d[1], h: +d[2], l: +d[3], c: +d[4], v: +d[5] }));
-        if(!active) return;
-        setCandles(parsed);
-        
-        const url24h = `https://api.binance.com/api/v3/ticker/24hr?symbol=${symbol}`;
-        const r2 = await fetch(url24h); 
-        const s = await r2.json();
-        setStats({ change: +s.priceChangePercent, high: +s.highPrice, low: +s.lowPrice });
-        setLastPrice(parsed[parsed.length-1]?.c || 0);
-      } catch (err) {
-        console.error("Failed to load market data:", err);
-      }
-    }
-    load();
-    return () => { active = false };
-  }, [symbol, timeframe]);
-
-  // --- WebSocket live updates (kline)
-  useEffect(() => {
-    if(wsKline.current) { wsKline.current.close(); wsKline.current = null; }
-    const stream = `${symbol.toLowerCase()}@kline_${timeframe}`;
-    const ws = new WebSocket(`wss://stream.binance.com:9443/ws/${stream}`);
-    wsKline.current = ws;
-
-    ws.onmessage = (ev) => {
-      try {
-        const msg = JSON.parse(ev.data);
-        if(!msg.k) return;
-        const k = msg.k;
-        const cndl: Candle = { t: Math.floor(k.t/1000), o: +k.o, h: +k.h, l: +k.l, c: +k.c, v: +k.v };
-        setLastPrice(+k.c);
-        setCandles(prev => {
-          const last = prev[prev.length-1];
-          let next: Candle[];
-          if(last && cndl.t === last.t) {
-            next = [...prev.slice(0,-1), cndl];
-          } else {
-            next = [...prev, cndl];
-          }
-          return next;
-        });
-      } catch (err) {
-        console.error("WebSocket kline error:", err);
-      }
-    };
-
-    return () => ws.close();
-  }, [symbol, timeframe]);
-
-  // --- WebSocket orderbook partial depth
-  useEffect(() => {
-    if(wsDepth.current) { wsDepth.current.close(); wsDepth.current = null; }
-    const stream = `${symbol.toLowerCase()}@depth20@100ms`;
-    const ws = new WebSocket(`wss://stream.binance.com:9443/ws/${stream}`);
-    wsDepth.current = ws;
-    ws.onmessage = (ev) => {
-      try {
-        const d: DepthUpdate = JSON.parse(ev.data);
-        if(!d || !d.bids || !d.asks) return;
-        const bids = d.bids.slice(0,20).map(([p,q])=>({p:+p,q:+q}));
-        const asks = d.asks.slice(0,20).map(([p,q])=>({p:+p,q:+q}));
-        const sumBid = bids.reduce((a,b)=>a+b.q,0);
-        const sumAsk = asks.reduce((a,b)=>a+b.q,0);
-        const imb = (sumBid - sumAsk) / Math.max(1e-8, (sumBid + sumAsk));
-        const bestBid = bids[0]?.p || 0;
-        const bestAsk = asks[0]?.p || 0;
-        setOb({ bid: bestBid, ask: bestAsk, sumBid, sumAsk, imb });
-      } catch (err) {
-        console.error("WebSocket depth error:", err);
-      }
-    };
-    return () => ws.close();
-  }, [symbol]);
+    if(!candles.length) return;
+    ema50Series.current?.setData(candles.map((k, i) => ({ time: k.t as any, value: pack.ema50[i] })));
+    ema50Series.current?.applyOptions({ visible: showEMA50 });
+    ema200Series.current?.setData(candles.map((k, i) => ({ time: k.t as any, value: pack.ema200[i] })));
+    ema200Series.current?.applyOptions({ visible: showEMA200 });
+    priceLineSeries.current?.setData(candles.map(k => ({ time: k.t as any, value: k.c })));
+    donHiSeries.current?.setData(candles.map((k,i)=>({ time: k.t as any, value: pack.don.hi[i] })));
+    donLoSeries.current?.setData(candles.map((k,i)=>({ time: k.t as any, value: pack.don.lo[i] })));
+    donHiSeries.current?.applyOptions({ visible: showDon });
+    donLoSeries.current?.applyOptions({ visible: showDon });
+  }, [candles, pack, showEMA50, showEMA200, showDon]);
 
   // --- Generate advanced signals on candle closes
   useEffect(() => {
@@ -325,42 +313,35 @@ function BTCTradingDashboard(){
     if(newSignals.length) setSignals(prev => [...newSignals.reverse(), ...prev].slice(0, 100));
   }, [candles, pack]);
 
+  // --- Risk calculations
+  const iLast = candles.length - 1;
+  const lastAtr = iLast>=0 ? (pack.atr14[iLast] || 0) : 0;
+  const slDistance = lastAtr * atrMult; // in price
+  const riskAmt = equity * (riskPct/100);
+  const qty = slDistance > 0 ? riskAmt / slDistance : 0; // base asset qty
+  const qtyRounded = Math.max(0, Math.floor(qty * 1e4) / 1e4); // 0.0001 step
+  const stopPriceBuy = lastPrice ? lastPrice - slDistance : 0;
+  const stopPriceSell = lastPrice ? lastPrice + slDistance : 0;
+  const tp1Buy = lastPrice ? lastPrice + slDistance : 0;
+  const tp2Buy = lastPrice ? lastPrice + 2*slDistance : 0;
+  const tp1Sell = lastPrice ? lastPrice - slDistance : 0;
+  const tp2Sell = lastPrice ? lastPrice - 2*slDistance : 0;
+
   // --- Stubs for AI score and alerts
   async function fetchAIScore(){
     try {
-      // Since backend endpoint doesn't exist, simulate AI score based on technical indicators
-      const i = candles.length - 1;
-      if (i < 50) return null;
-      
-      const price = candles[i].c;
-      const ema50v = pack.ema50[i] || price;
-      const ema200v = pack.ema200[i] || price;
-      const rsi = pack.rsi14[i] || 50;
-      const adx = pack.adx14.adx[i] || 0;
-      
-      // Simulate AI score (0-1) based on multiple factors
-      let score = 0.5;
-      if (ema50v > ema200v) score += 0.1;
-      if (rsi < 30) score += 0.1;
-      if (rsi > 70) score -= 0.1;
-      if (adx > 25) score += 0.05;
-      if (ob.imb > 0.1) score += 0.05;
-      
-      score = Math.max(0, Math.min(1, score + (Math.random() - 0.5) * 0.1));
-      
-      console.log("AI Score calculated:", score);
-      return score;
-    } catch (error) {
-      console.error("AI Score calculation failed:", error);
-      return null;
-    }
+      const res = await fetch("/api/infer", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ symbol, timeframe, features: { lastPrice, atr: lastAtr, adx: pack.adx14.adx[iLast]||0, obImb: ob.imb, liqNear } }) });
+      if(!res.ok) throw new Error("no backend");
+      const json = await res.json();
+      return typeof json.score === "number" ? json.score : null;
+    } catch { return null; }
   }
 
   async function sendAlert(sig: Signal){
     try {
       await fetch("/api/alerts", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ symbol, timeframe, signal: sig, price: lastPrice, ob }) });
-      alert("Alert sent successfully!");
-    } catch { alert("Alert endpoint not available") }
+      alert("Alarm gesendet (Webhook Stub)");
+    } catch { alert("Alarm-Endpoint nicht erreichbar") }
   }
 
   // --- Heatmap matrix init
@@ -368,129 +349,212 @@ function BTCTradingDashboard(){
     const rows = Math.floor((2*rangeUSD)/bucketUSD)+1;
     const cols = heatCols;
     dimsRef.current = { rows, cols };
-    matrixRef.current = new Float32Array(rows*cols);
+    matBuyRef.current = new Float32Array(rows*cols);
+    matSellRef.current = new Float32Array(rows*cols);
+    tsRef.current = new Float64Array(cols);
   }, [rangeUSD, bucketUSD, heatCols]);
 
   // --- Heatmap draw loop
   useEffect(() => {
     const timer = setInterval(() => {
-      const mat = matrixRef.current; const dims = dimsRef.current; const cvs = heatCanvasRef.current;
-      if(!mat || !cvs) { accumRef.current.clear(); return; }
+      const buy = matBuyRef.current; const sell = matSellRef.current; const dims = dimsRef.current; const cvs = heatCanvasRef.current; const ts = tsRef.current;
+      if(!buy || !sell || !cvs || !ts) { accumBuyRef.current.clear(); accumSellRef.current.clear(); return; }
       const { rows, cols } = dims;
       // shift left
       for(let r=0;r<rows;r++){
         const base = r*cols;
-        for(let c=0;c<cols-1;c++){ mat[base+c] = mat[base+c+1]; }
-        mat[base+cols-1] = 0;
+        for(let c=0;c<cols-1;c++){ buy[base+c] = buy[base+c+1]; sell[base+c] = sell[base+c+1]; }
+        buy[base+cols-1] = 0; sell[base+cols-1] = 0;
       }
-      // write latest accumulation
-      accumRef.current.forEach((val, idx) => { if(idx>=0 && idx<rows){ mat[idx*cols + (cols-1)] = val; } });
-      accumRef.current.clear();
+      for(let c=0;c<cols-1;c++){ ts[c] = ts[c+1]; }
+      ts[cols-1] = Date.now();
+
+      // write latest accumulation with threshold
+      const writeAcc = (acc: Map<number, number>, target: Float32Array) => {
+        acc.forEach((val, idx) => {
+          if(idx>=0 && idx<rows && val>=minNotional){ target[idx*cols + (cols-1)] = val; }
+        });
+        acc.clear();
+      };
+      writeAcc(accumBuyRef.current, buy);
+      writeAcc(accumSellRef.current, sell);
 
       // draw
       const ctx = cvs.getContext('2d'); if(!ctx) return;
       const W = cvs.width, H = cvs.height;
       ctx.clearRect(0,0,W,H);
-      let maxVal = 0; for(let i=0;i<mat.length;i++){ if(mat[i]>maxVal) maxVal = mat[i]; }
-      const colW = W/cols; const rowH = H/rows;
+      const marginLeft = 56; const marginBottom = 18; const plotW = W - marginLeft; const plotH = H - marginBottom;
+
+      // compute max
+      let maxBuy = 0, maxSell = 0; const len = buy.length;
+      for(let i=0;i<len;i++){ if(buy[i]>maxBuy) maxBuy = buy[i]; if(sell[i]>maxSell) maxSell = sell[i]; }
+
+      const colsW = plotW; const colW = colsW/cols; const rowH = plotH/rows;
+
+      // grid + price labels
+      ctx.fillStyle = '#94a3b8';
+      ctx.font = '10px ui-monospace, SFMono-Regular, Menlo, monospace';
+      ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
+      const center = lastPrice || 0;
+      const mid = Math.floor(rows/2);
+      const ticks = 8; const step = Math.max(1, Math.round(rows/ticks));
+      ctx.strokeStyle = '#1f2937'; ctx.lineWidth = 1;
+      for(let r=0;r<rows;r+=step){
+        const price = center + (r - mid) * bucketUSD;
+        const y = plotH - (r+0.5)*rowH;
+        ctx.fillText(fmt(price,0), marginLeft-6, y);
+        ctx.globalAlpha = 0.25; ctx.beginPath(); ctx.moveTo(marginLeft, y); ctx.lineTo(W, y); ctx.stroke(); ctx.globalAlpha = 1;
+      }
+      // time labels
+      ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic';
+      const t0 = ts[0]; const t1 = ts[Math.floor(cols/2)]; const t2 = ts[cols-1];
+      const tfmt = (t:number)=> t? new Date(t).toLocaleTimeString(): '';
+      ctx.fillText(tfmt(t0), marginLeft + 0*colW, H-2);
+      ctx.fillText(tfmt(t1), marginLeft + (cols/2)*colW, H-2);
+      ctx.fillText(tfmt(t2), marginLeft + (cols-1)*colW, H-2);
+
+      // center line
+      ctx.strokeStyle = '#64748b'; ctx.lineWidth = 1; ctx.beginPath();
+      ctx.moveTo(marginLeft, plotH/2); ctx.lineTo(W, plotH/2); ctx.stroke();
+
+      // draw sells (red) and buys (green)
       for(let r=0;r<rows;r++){
         for(let c=0;c<cols;c++){
-          const v = mat[r*cols+c]; if(v<=0) continue;
-          const a = Math.min(1, v/(maxVal||1));
-          ctx.fillStyle = `hsla(38, 92%, 50%, ${a})`;
-          ctx.fillRect(c*colW, H-(r+1)*rowH, Math.ceil(colW), Math.ceil(rowH));
+          const vS = sell[r*cols+c]; const vB = buy[r*cols+c];
+          if(vS>0 && showSells){
+            const a = (logScale? Math.log1p(vS)/Math.log1p(maxSell||1) : vS/(maxSell||1));
+            if(a>0){ ctx.fillStyle = `rgba(239,68,68,${Math.min(1,a)})`; ctx.fillRect(marginLeft + c*colW, plotH-(r+1)*rowH, Math.ceil(colW), Math.ceil(rowH)); }
+          }
+          if(vB>0 && showBuys){
+            const a = (logScale? Math.log1p(vB)/Math.log1p(maxBuy||1) : vB/(maxBuy||1));
+            if(a>0){ ctx.fillStyle = `rgba(16,185,129,${Math.min(1,a)})`; ctx.fillRect(marginLeft + c*colW, plotH-(r+1)*rowH, Math.ceil(colW), Math.ceil(rowH)); }
+          }
         }
       }
-      // center line
-      ctx.strokeStyle = 'hsl(215, 20%, 65%)';
-      ctx.lineWidth = 1;
-      ctx.beginPath();
-      ctx.moveTo(0, H/2); ctx.lineTo(W, H/2); ctx.stroke();
+
+      // hover tooltip
+      if(hover){
+        const { x, y } = hover;
+        ctx.fillStyle = '#0b1220'; ctx.strokeStyle = '#94a3b8'; ctx.lineWidth = 1;
+        const boxW = 150, boxH = 56; const bx = Math.min(W-boxW-4, Math.max(marginLeft, x+8)); const by = Math.max(4, y- boxH - 8);
+        ctx.globalAlpha = 0.9; ctx.fillRect(bx, by, boxW, boxH); ctx.globalAlpha = 1; ctx.strokeRect(bx, by, boxW, boxH);
+        ctx.fillStyle = '#cbd5e1'; ctx.font = '11px ui-monospace, monospace'; ctx.textAlign = 'left'; ctx.textBaseline = 'top';
+        ctx.fillText(`Preis: ${fmt(hover.price,2)}`, bx+6, by+6);
+        ctx.fillText(`Buy: $${fmt(hover.buy,0)}  Sell: $${fmt(hover.sell,0)}`, bx+6, by+20);
+        if(hover.ts){ ctx.fillText(new Date(hover.ts).toLocaleTimeString(), bx+6, by+34); }
+      }
+
+      // legend
+      ctx.fillStyle = '#cbd5e1'; ctx.font = '10px ui-monospace, monospace'; ctx.textAlign = 'left'; ctx.textBaseline = 'top';
+      ctx.fillText('Buys', marginLeft+6, 6); ctx.fillStyle = 'rgba(16,185,129,0.8)'; ctx.fillRect(marginLeft+40, 8, 16, 8);
+      ctx.fillStyle = '#cbd5e1'; ctx.fillText('Sells', marginLeft+66, 6); ctx.fillStyle = 'rgba(239,68,68,0.8)'; ctx.fillRect(marginLeft+108, 8, 16, 8);
+      ctx.fillStyle = '#94a3b8'; ctx.fillText(logScale? 'log scale' : 'linear', marginLeft+130, 6);
+
     }, 1000);
     return () => clearInterval(timer);
-  }, [heatCols]);
+  }, [heatCols, showBuys, showSells, logScale, lastPrice, bucketUSD, rangeUSD, minNotional, hover]);
 
-  // --- Liquidations WebSocket (Binance Futures) with error handling
+  // pointer handlers for tooltip
+  useEffect(() => {
+    const cvs = heatCanvasRef.current; const dims = dimsRef.current; const ts = tsRef.current;
+    if(!cvs || !dims || !ts) return;
+    const handle = (clientX:number, clientY:number) => {
+      const rect = cvs.getBoundingClientRect();
+      const x = clientX - rect.left; const y = clientY - rect.top;
+      const marginLeft = 56; const marginBottom = 18; const plotW = cvs.width - marginLeft; const plotH = cvs.height - marginBottom;
+      const { rows, cols } = dims;
+      if(x < marginLeft || x > cvs.width || y < 0 || y > plotH){ setHover(null); return; }
+      const col = Math.floor((x - marginLeft) / (plotW/cols));
+      const row = Math.floor((plotH - y) / (plotH/rows));
+      const mid = Math.floor(rows/2);
+      const price = (lastPrice || 0) + (row - mid) * bucketUSD;
+      const buy = matBuyRef.current ? matBuyRef.current[row*cols + col] || 0 : 0;
+      const sell = matSellRef.current ? matSellRef.current[row*cols + col] || 0 : 0;
+      const tsVal = ts[col] || 0;
+      setHover({ x, y, row, col, price, buy, sell, ts: tsVal });
+    };
+    const onMove = (e: MouseEvent) => handle(e.clientX, e.clientY);
+    const onLeave = () => setHover(null);
+    const onTouch = (e: TouchEvent) => { if(e.touches[0]) handle(e.touches[0].clientX, e.touches[0].clientY); };
+    cvs.addEventListener('mousemove', onMove);
+    cvs.addEventListener('mouseleave', onLeave);
+    cvs.addEventListener('touchstart', onTouch, { passive: true });
+    cvs.addEventListener('touchmove', onTouch, { passive: true });
+    return () => {
+      cvs.removeEventListener('mousemove', onMove);
+      cvs.removeEventListener('mouseleave', onLeave);
+      cvs.removeEventListener('touchstart', onTouch);
+      cvs.removeEventListener('touchmove', onTouch);
+    };
+  }, [lastPrice, bucketUSD]);
+
+  // --- Liquidations WebSocket (Binance Futures)
   useEffect(() => {
     if(wsLiq.current){ wsLiq.current.close(); wsLiq.current = null; }
-    
-    // Skip liquidation data for now due to connection issues
-    // This would normally connect to Binance futures liquidation stream
-    console.log("Liquidation stream disabled - using simulated data");
-    
-    // Simulate some liquidation data for visualization
-    const simulateLiquidations = () => {
-      if (!lastPrice) return;
-      
-      const rows = Math.floor((2*rangeUSD)/bucketUSD)+1;
-      const mid = Math.floor(rows/2);
-      
-      // Add some random liquidation data around current price
-      for (let i = 0; i < 3; i++) {
-        const priceOffset = (Math.random() - 0.5) * rangeUSD;
-        const idx = Math.round(priceOffset/bucketUSD) + mid;
-        if (idx >= 0 && idx < rows) {
-          const acc = accumRef.current;
-          const amount = Math.random() * 100000; // Random liquidation amount
-          acc.set(idx, (acc.get(idx)||0) + amount);
+    const stream = `${symbol.toLowerCase()}@forceOrder`;
+    const ws = new WebSocket(`wss://fstream.binance.com/ws/${stream}`);
+    wsLiq.current = ws;
+    ws.onmessage = (ev) => {
+      try{
+        const e = JSON.parse(ev.data);
+        const o = e.o || e; // object shape
+        const price = parseFloat(o.ap || o.p);
+        const qty = parseFloat(o.l || o.q);
+        const side = (o.S || o.s || '').toString().toUpperCase();
+        if(!price || !qty) return;
+        const notional = price * qty;
+        const rows = Math.floor((2*rangeUSD)/bucketUSD)+1; const mid = Math.floor(rows/2);
+        const center = lastPrice || price;
+        const idx = Math.round((price - center)/bucketUSD) + mid;
+        if(idx>=0 && idx<rows){
+          if(side === 'BUY'){ const acc = accumBuyRef.current; acc.set(idx, (acc.get(idx)||0) + notional); }
+          else if(side === 'SELL'){ const acc = accumSellRef.current; acc.set(idx, (acc.get(idx)||0) + notional); }
+          else { const acc = accumSellRef.current; acc.set(idx, (acc.get(idx)||0) + notional); }
         }
-      }
-      
-      // Simulate near liquidations
-      setLiqNear(prev => prev * 0.9 + Math.random() * 50000);
+        if(Math.abs(price - center) <= bucketUSD/2){ setLiqNear(prev => prev*0.8 + notional*0.2); }
+      } catch {}
     };
-    
-    const timer = setInterval(simulateLiquidations, 5000);
-    return () => clearInterval(timer);
+    return () => ws.close();
   }, [symbol, lastPrice, rangeUSD, bucketUSD]);
 
   // --- KI Analyst (local heuristic + optional backend)
   function localHeuristic(): { dir: AIDir; score: number; conf: number; reasons: string[] }{
-    const i = candles.length-1; if(i<50) return { dir: "FLAT", score: 0.5, conf: 0.1, reasons: ["insufficient data"] };
+    const i = candles.length-1; if(i<50) return { dir: "FLAT", score: 0.5, conf: 0.1, reasons: ["zu wenig Daten"] };
     const price = candles[i].c;
     const adxv = pack.adx14.adx[i]||0;
     const rsiv = pack.rsi14[i]||50;
     const ema50v = pack.ema50[i]||price;
     const ema200v = pack.ema200[i]||price;
     const mac = (pack.macdPack.macdLine[i]||0) - (pack.macdPack.signalLine[i]||0);
-    const donHi = pack.don.hi[i-1]||price; 
-    const donLo = pack.don.lo[i-1]||price;
+    const donHi = pack.don.hi[i-1]||price; const donLo = pack.don.lo[i-1]||price;
     const imb = ob.imb||0;
 
     const reasons: string[] = [];
     let score = 0.5;
 
-    // Trend bias via EMA and ADX
-    if(ema50v>ema200v){ score += 0.08; reasons.push("EMA50>EMA200"); } 
-    else if(ema50v<ema200v){ score -= 0.08; reasons.push("EMA50<EMA200"); }
+    if(ema50v>ema200v){ score += 0.08; reasons.push("EMA50>EMA200"); } else if(ema50v<ema200v){ score -= 0.08; reasons.push("EMA50<EMA200"); }
     if(adxv>22){ reasons.push(`ADX ${adxv.toFixed(1)}`); score += 0.05; }
 
-    // Breakout proximity
-    if(price>donHi){ score += 0.07; reasons.push("above Donchian"); }
-    if(price<donLo){ score -= 0.07; reasons.push("below Donchian"); }
+    if(price>donHi){ score += 0.07; reasons.push("über Donchian"); }
+    if(price<donLo){ score -= 0.07; reasons.push("unter Donchian"); }
 
-    // Momentum
-    if(mac>0){ score += 0.05; reasons.push("MACD bullish"); } 
-    else { score -= 0.05; reasons.push("MACD bearish"); }
+    if(mac>0){ score += 0.05; reasons.push("MACD bull"); } else { score -= 0.05; reasons.push("MACD bear"); }
 
-    // Mean reversion hint from RSI extremes
+    // RSI extremes
     if(rsiv<30){ score += 0.04; reasons.push("RSI<30"); }
     if(rsiv>70){ score -= 0.04; reasons.push("RSI>70"); }
 
     // Orderbook imbalance
-    score += Math.max(-0.05, Math.min(0.05, imb*0.1));
-    if(Math.abs(imb)>0.1) reasons.push(`OB ${Math.sign(imb)>0?"Bid":"Ask"} heavy`);
+    score += Math.max(-0.05, Math.min(0.05, (imb||0)*0.1));
+    if(Math.abs(imb)>0.1) reasons.push(`OB ${Math.sign(imb)>0?"Bid":"Ask"}`);
 
     // Liquidations near spot
     const liqBoost = Math.max(-0.05, Math.min(0.05, (liqNear/1_000_000)*0.05));
     if(liqNear>0) { score += liqBoost; reasons.push(`Liq ${Math.round(liqNear/1000)}k`); }
 
-    // Clamp
     score = Math.max(0, Math.min(1, score));
 
-    let dir: AIDir = "FLAT"; 
-    if(score>0.55) dir="LONG"; 
-    if(score<0.45) dir="SHORT";
+    let dir: AIDir = "FLAT"; if(score>0.55) dir="LONG"; if(score<0.45) dir="SHORT";
     const conf = Math.min(1, Math.abs(score-0.5)*2 * (1 + Math.min(1, adxv/30)) / 2);
     return { dir, score, conf, reasons };
   }
@@ -500,45 +564,25 @@ function BTCTradingDashboard(){
     const s = await fetchAIScore();
     if(s===null) { setAi(base); return; }
     const blendedScore = (base.score*0.5) + (s*0.5);
-    let dir: AIDir = "FLAT"; 
-    if(blendedScore>0.55) dir="LONG"; 
-    if(blendedScore<0.45) dir="SHORT";
+    let dir: AIDir = "FLAT"; if(blendedScore>0.55) dir="LONG"; if(blendedScore<0.45) dir="SHORT";
     setAi({ dir, score: blendedScore, conf: base.conf, reasons: ["heuristic", "backend"].concat(base.reasons) });
   }
-
-  // Auto-run analysis when data updates
-  useEffect(() => {
-    if (candles.length > 50) {
-      const heuristic = localHeuristic();
-      setAi(heuristic);
-    }
-  }, [candles, pack, ob, liqNear]);
 
   // --- UI helpers
   const changeTf = (tf: string) => setTimeframe(tf);
   const tfList = ["1m","5m","15m","1h","4h","1d"];
 
   return (
-    <div className="min-h-screen bg-background p-4 md:p-6 space-y-6">
-      {/* Header */}
-      <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+    <div className="p-4 md:p-6 space-y-4">
+      <div className="flex flex-col md:flex-row justify-between gap-3">
         <div className="flex items-center gap-3">
-          <div className="p-2 rounded-lg bg-gradient-to-r from-primary to-accent">
-            <LineChart className="h-6 w-6 text-background" />
-          </div>
-          <div>
-            <h1 className="text-2xl md:text-3xl font-bold bg-gradient-to-r from-primary to-accent bg-clip-text text-transparent">
-              BTC Trading Dashboard
-            </h1>
-            <p className="text-sm text-muted-foreground">Advanced Technical Analysis & AI Signals</p>
-          </div>
-          <TradingBadge variant="live">Live</TradingBadge>
+          <LineChart className="h-6 w-6" />
+          <h1 className="text-xl md:text-2xl font-semibold">BTC Trading Dashboard</h1>
+          <Badge variant="secondary">Live</Badge>
         </div>
         <div className="flex items-center gap-3">
           <Select value={symbol} onValueChange={setSymbol}>
-            <SelectTrigger className="w-40">
-              <SelectValue />
-            </SelectTrigger>
+            <SelectTrigger className="w-40"><SelectValue /></SelectTrigger>
             <SelectContent>
               <SelectItem value="BTCUSDT">BTC/USDT</SelectItem>
               <SelectItem value="BTCFDUSD">BTC/FDUSD</SelectItem>
@@ -546,9 +590,7 @@ function BTCTradingDashboard(){
             </SelectContent>
           </Select>
           <Select value={timeframe} onValueChange={changeTf}>
-            <SelectTrigger className="w-28">
-              <SelectValue />
-            </SelectTrigger>
+            <SelectTrigger className="w-28"><SelectValue /></SelectTrigger>
             <SelectContent>
               {tfList.map(tf => <SelectItem key={tf} value={tf}>{tf}</SelectItem>)}
             </SelectContent>
@@ -556,393 +598,238 @@ function BTCTradingDashboard(){
         </div>
       </div>
 
-      {/* Price & Stats Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-        <Card className="md:col-span-2">
-          <CardContent className="p-6">
-            <div className="flex items-center justify-between">
+      <div className="grid grid-cols-1">
+        <Card>
+          <CardHeader className="pb-2"><CardTitle>Liquidations Heatmap (Futures)</CardTitle></CardHeader>
+          <CardContent>
+            <div className="grid grid-cols-2 md:grid-cols-6 gap-3 mb-3 items-end">
               <div>
-                <div className="text-3xl font-bold">{lastPrice ? fmt(lastPrice, 2) : "-"}</div>
-                <div className="text-sm text-muted-foreground">{symbol}</div>
+                <Label>Range ±USD</Label>
+                <Input type="number" value={rangeUSD} onChange={e=>setRangeUSD(parseFloat(e.target.value)||0)} />
               </div>
-              {stats && (
-                <div className="text-right">
-                  <div className={`text-2xl font-semibold ${stats.change >= 0 ? "text-bull" : "text-bear"}`}>
-                    {stats.change >= 0 ? "+" : ""}{fmt(stats.change, 2)}%
-                  </div>
-                  <div className="text-sm text-muted-foreground">24h Change</div>
-                </div>
-              )}
+              <div>
+                <Label>Bucket USD</Label>
+                <Input type="number" value={bucketUSD} onChange={e=>setBucketUSD(parseFloat(e.target.value)||1)} />
+              </div>
+              <div>
+                <Label>Spalten</Label>
+                <Input type="number" value={heatCols} onChange={e=>setHeatCols(parseInt(e.target.value)||60)} />
+              </div>
+              <div>
+                <Label>Min Notional $</Label>
+                <Input type="number" value={minNotional} onChange={e=>setMinNotional(parseFloat(e.target.value)||0)} />
+              </div>
+              <div className="flex items-center gap-2"><Switch checked={showBuys} onCheckedChange={setShowBuys} id="showB" /><Label htmlFor="showB">Buys</Label></div>
+              <div className="flex items-center gap-2"><Switch checked={showSells} onCheckedChange={setShowSells} id="showS" /><Label htmlFor="showS">Sells</Label></div>
+              <div className="flex items-center gap-2"><Switch checked={logScale} onCheckedChange={setLogScale} id="log" /><Label htmlFor="log">Log-Skala</Label></div>
+              <div className="text-xs text-muted-foreground col-span-2 md:col-span-6">Tippen oder hovern zeigt Preis, Volumen und Zeit an. Grün = Buy-Liq, Rot = Sell-Liq.</div>
             </div>
-            {stats && (
-              <div className="mt-4 flex gap-4 text-sm">
-                <div>
-                  <span className="text-muted-foreground">24h High: </span>
-                  <span className="font-mono">{fmt(stats.high, 0)}</span>
-                </div>
-                <div>
-                  <span className="text-muted-foreground">24h Low: </span>
-                  <span className="font-mono">{fmt(stats.low, 0)}</span>
-                </div>
-              </div>
-            )}
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardContent className="p-6">
-            <div className="flex items-center gap-2 mb-2">
-              <Activity className="h-4 w-4 text-primary" />
-              <span className="text-sm font-medium">Technical Indicators</span>
-            </div>
-            <div className="space-y-2 text-sm">
-              <div className="flex justify-between">
-                <span className="text-muted-foreground">ATR14:</span>
-                <span className="font-mono">{fmt(lastAtr, 2)}</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-muted-foreground">ADX14:</span>
-                <span className="font-mono">{fmt(pack.adx14.adx[iLast] || 0, 1)}</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-muted-foreground">RSI14:</span>
-                <span className="font-mono">{fmt(pack.rsi14[iLast] || 50, 1)}</span>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardContent className="p-6">
-            <div className="flex items-center gap-2 mb-2">
-              <Target className="h-4 w-4 text-accent" />
-              <span className="text-sm font-medium">Order Book</span>
-            </div>
-            <div className="space-y-2 text-sm">
-              <div className="flex justify-between">
-                <span className="text-muted-foreground">Bid:</span>
-                <span className="font-mono text-bull">{fmt(ob.bid, 2)}</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-muted-foreground">Ask:</span>
-                <span className="font-mono text-bear">{fmt(ob.ask, 2)}</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-muted-foreground">Imbalance:</span>
-                <span className={`font-mono ${ob.imb > 0 ? "text-bull" : "text-bear"}`}>
-                  {fmt((ob.imb || 0) * 100, 1)}%
-                </span>
-              </div>
+            <div ref={heatWrapRef} className="w-full overflow-hidden rounded border border-border">
+              <canvas ref={heatCanvasRef} width={980} height={300} className="w-full h-[300px] block bg-[#0b0f1a]" />
             </div>
           </CardContent>
         </Card>
       </div>
 
-      {/* AI Analyst Hero Section */}
-      <Card className="bg-gradient-to-r from-primary/10 to-accent/10 border-primary/20">
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <Zap className="h-5 w-5 text-primary" />
-            AI Trading Assistant
-          </CardTitle>
-        </CardHeader>
-        <CardContent>
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-            <div className="text-center">
-              <div className="text-xs text-muted-foreground mb-1">Market Direction</div>
-              <div className={`text-4xl font-bold mb-2 ${ai.dir === "LONG" ? "text-bull" : ai.dir === "SHORT" ? "text-bear" : "text-neutral"}`}>
-                {ai.dir}
-              </div>
-              <TradingBadge variant={ai.dir === "LONG" ? "bull" : ai.dir === "SHORT" ? "bear" : "secondary"}>
-                {ai.dir === "LONG" ? "Bullish" : ai.dir === "SHORT" ? "Bearish" : "Neutral"}
-              </TradingBadge>
-            </div>
-            
-            <div className="text-center">
-              <div className="text-xs text-muted-foreground mb-1">AI Score</div>
-              <div className="text-4xl font-bold mb-2">{fmt(ai.score * 100, 1)}%</div>
-              <div className="text-xs text-muted-foreground">Confidence: {fmt(ai.conf * 100, 1)}%</div>
-            </div>
-
-            <div className="space-y-3">
-              <div>
-                <div className="text-xs text-muted-foreground mb-2">Key Factors</div>
-                <div className="text-xs">{ai.reasons.slice(0, 3).join(", ") || "Analyzing..."}</div>
-              </div>
-              <div className="grid grid-cols-2 gap-2">
-                <TradingButton size="sm" onClick={runAnalysis}>
-                  Update Analysis
-                </TradingButton>
-                <TradingButton 
-                  size="sm" 
-                  variant="alert" 
-                  onClick={() => {
-                    if (ai.dir !== "FLAT") {
-                      const now = Math.floor(Date.now() / 1000);
-                      const sig: Signal = { 
-                        time: now, 
-                        type: ai.dir === "LONG" ? "BUY" : "SELL", 
-                        rule: `AI ${Math.round(ai.score * 100)}%`, 
-                        price: lastPrice, 
-                        adx: pack.adx14.adx[iLast], 
-                        atr: lastAtr 
-                      };
-                      sendAlert(sig);
-                    }
-                  }}
-                >
-                  Send Alert
-                </TradingButton>
-              </div>
-            </div>
-          </div>
-        </CardContent>
-      </Card>
-
-      {/* Chart & Risk Management */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         <Card className="lg:col-span-2">
-          <CardHeader>
-            <CardTitle>Price Chart</CardTitle>
+          <CardHeader className="pb-2">
+            <CardTitle>Chart</CardTitle>
           </CardHeader>
           <CardContent>
-            <div ref={containerRef} className="w-full h-[440px] rounded-lg border border-border" />
+            <div ref={containerRef} className="w-full" />
             <div className="mt-3 grid grid-cols-2 md:grid-cols-6 gap-3">
-              <div className="flex items-center gap-2">
-                <Switch checked={showEMA50} onCheckedChange={setShowEMA50} id="ema50" />
-                <Label htmlFor="ema50" className="text-xs">EMA 50</Label>
-              </div>
-              <div className="flex items-center gap-2">
-                <Switch checked={showEMA200} onCheckedChange={setShowEMA200} id="ema200" />
-                <Label htmlFor="ema200" className="text-xs">EMA 200</Label>
-              </div>
-              <div className="flex items-center gap-2">
-                <Switch checked={showDon} onCheckedChange={setShowDon} id="don" />
-                <Label htmlFor="don" className="text-xs">Donchian 20</Label>
-              </div>
-              <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                Live: <span className="font-mono text-primary">${lastPrice ? fmt(lastPrice, 2) : "Loading..."}</span>
-              </div>
-            </div>
-            <div className="mt-4 grid grid-cols-3 gap-4 text-sm">
-              <div className="text-center p-2 border rounded">
-                <div className="text-xs text-muted-foreground">EMA Cross</div>
-                <div className={pack.ema50[iLast] > pack.ema200[iLast] ? "text-bull" : "text-bear"}>
-                  {pack.ema50[iLast] > pack.ema200[iLast] ? "Bullish" : "Bearish"}
-                </div>
-              </div>
-              <div className="text-center p-2 border rounded">
-                <div className="text-xs text-muted-foreground">RSI Signal</div>
-                <div className={(pack.rsi14[iLast] || 50) < 30 ? "text-bull" : (pack.rsi14[iLast] || 50) > 70 ? "text-bear" : "text-neutral"}>
-                  {(pack.rsi14[iLast] || 50) < 30 ? "Oversold" : (pack.rsi14[iLast] || 50) > 70 ? "Overbought" : "Neutral"}
-                </div>
-              </div>
-              <div className="text-center p-2 border rounded">
-                <div className="text-xs text-muted-foreground">Trend Strength</div>
-                <div className={(pack.adx14.adx[iLast] || 0) > 25 ? "text-primary" : "text-neutral"}>
-                  {(pack.adx14.adx[iLast] || 0) > 25 ? "Strong" : "Weak"}
-                </div>
-              </div>
+              <div className="flex items-center gap-2"><Switch checked={showEMA50} onCheckedChange={setShowEMA50} id="ema50" /><Label htmlFor="ema50">EMA 50</Label></div>
+              <div className="flex items-center gap-2"><Switch checked={showEMA200} onCheckedChange={setShowEMA200} id="ema200" /><Label htmlFor="ema200">EMA 200</Label></div>
+              <div className="flex items-center gap-2"><Switch checked={showDon} onCheckedChange={setShowDon} id="don" /><Label htmlFor="don">Donchian 20</Label></div>
+              <div className="flex items-center gap-2 text-sm text-muted-foreground">ATR14: <span className="font-mono">{fmt(lastAtr,2)}</span></div>
+              <div className="flex items-center gap-2 text-sm text-muted-foreground">ADX14: <span className="font-mono">{fmt(pack.adx14.adx[iLast]||0,1)}</span></div>
+              <div className="flex items-center gap-2 text-sm text-muted-foreground">OB-Imb: <span className={`font-mono ${ob.imb>0?"text-green-500":"text-red-500"}`}>{fmt((ob.imb||0)*100,1)}%</span></div>
             </div>
           </CardContent>
         </Card>
 
         <Card>
-          <CardHeader>
-            <CardTitle>Risk Management</CardTitle>
+          <CardHeader className="pb-2">
+            <CardTitle>Ticker</CardTitle>
           </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <Label className="text-xs">Equity (USDT)</Label>
-                <Input type="number" value={equity} onChange={e => setEquity(parseFloat(e.target.value) || 0)} />
+          <CardContent>
+            <div className="space-y-2">
+              <div className="text-3xl font-bold">{lastPrice ? fmt(lastPrice, 2) : "-"}</div>
+              <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                {stats && (<>
+                  <span>24h:</span>
+                  <span className={stats.change >= 0 ? "text-green-500" : "text-red-500"}>{fmt(stats.change, 2)}%</span>
+                  <span>H {fmt(stats.high,0)}</span>
+                  <span>L {fmt(stats.low,0)}</span>
+                </>)}
               </div>
-              <div>
-                <Label className="text-xs">Risk %</Label>
-                <Input type="number" step="0.1" value={riskPct} onChange={e => setRiskPct(parseFloat(e.target.value) || 0)} />
-              </div>
-              <div>
-                <Label className="text-xs">ATR Multiplier</Label>
-                <Input type="number" step="0.1" value={atrMult} onChange={e => setAtrMult(parseFloat(e.target.value) || 0)} />
-              </div>
-              <div className="flex items-end">
-                <div>
-                  <div className="text-xs text-muted-foreground">SL Distance</div>
-                  <div className="font-mono text-sm">{fmt(slDistance, 2)}</div>
-                </div>
+              <div className="pt-2 flex items-center gap-2">
+                <Badge variant="secondary">Quelle: Binance</Badge>
+                <Badge variant="outline">TF {timeframe}</Badge>
               </div>
             </div>
-            
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <div className="text-xs text-muted-foreground">Position Size (BTC)</div>
-                <div className="text-lg font-semibold">{fmt(qtyRounded, 4)}</div>
-              </div>
-              <div>
-                <div className="text-xs text-muted-foreground">Risk Amount (USDT)</div>
-                <div className="text-lg font-semibold">{fmt(riskAmt, 2)}</div>
-              </div>
-            </div>
-
-            <div className="space-y-3">
-              <div className="border rounded-lg p-3 bg-gradient-to-r from-bull/10 to-bull/5">
-                <div className="text-xs text-muted-foreground mb-1">Long Setup</div>
-                <div className="flex gap-3 text-sm">
-                  <span>SL</span><span className="font-mono">{fmt(stopPriceBuy, 2)}</span>
-                  <span>TP1</span><span className="font-mono">{fmt(tp1Buy, 2)}</span>
-                  <span>TP2</span><span className="font-mono">{fmt(tp2Buy, 2)}</span>
-                </div>
-              </div>
-              <div className="border rounded-lg p-3 bg-gradient-to-r from-bear/10 to-bear/5">
-                <div className="text-xs text-muted-foreground mb-1">Short Setup</div>
-                <div className="flex gap-3 text-sm">
-                  <span>SL</span><span className="font-mono">{fmt(stopPriceSell, 2)}</span>
-                  <span>TP1</span><span className="font-mono">{fmt(tp1Sell, 2)}</span>
-                  <span>TP2</span><span className="font-mono">{fmt(tp2Sell, 2)}</span>
-                </div>
-              </div>
-            </div>
-
-            <TradingButton variant="trading" className="w-full" onClick={async () => {
-              const s = await fetchAIScore();
-              if (s === null) alert("AI-Score: No backend available");
-              else alert(`AI-Score: ${fmt(s * 100, 1)}%`);
-            }}>
-              Get Advanced AI Score
-            </TradingButton>
           </CardContent>
         </Card>
       </div>
 
-      {/* Signals */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <AlertTriangle className="h-5 w-5" />
-            Trading Signals
-          </CardTitle>
-        </CardHeader>
-        <CardContent>
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead className="text-left text-muted-foreground border-b border-border">
-                <tr>
-                  <th className="py-3 px-2">Time</th>
-                  <th className="py-3 px-2">Type</th>
-                  <th className="py-3 px-2">Rule</th>
-                  <th className="py-3 px-2">Price</th>
-                  <th className="py-3 px-2">ADX</th>
-                  <th className="py-3 px-2">ATR</th>
-                  <th className="py-3 px-2">Action</th>
-                </tr>
-              </thead>
-              <tbody>
-                {signals.length > 0 ? signals.map((s, i) => (
-                  <tr key={i} className="border-b border-border hover:bg-accent/50">
-                    <td className="py-3 px-2">{new Date(s.time*1000).toLocaleTimeString()}</td>
-                    <td className="py-3 px-2">
-                      <TradingBadge variant={s.type === "BUY" ? "bull" : "bear"}>
-                        {s.type}
-                      </TradingBadge>
-                    </td>
-                    <td className="py-3 px-2">{s.rule}</td>
-                    <td className="py-3 px-2 font-mono">{fmt(s.price, 2)}</td>
-                    <td className="py-3 px-2 font-mono">{s.adx ? fmt(s.adx,1) : "-"}</td>
-                    <td className="py-3 px-2 font-mono">{s.atr ? fmt(s.atr,2) : "-"}</td>
-                    <td className="py-3 px-2">
-                      <TradingButton size="sm" variant="outline" onClick={() => sendAlert(s)}>
-                        Alert
-                      </TradingButton>
-                    </td>
-                  </tr>
-                )) : (
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        <Card className="lg:col-span-2">
+          <CardHeader className="pb-2"><CardTitle>Signale</CardTitle></CardHeader>
+          <CardContent>
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead className="text-left text-muted-foreground">
                   <tr>
-                    <td colSpan={7} className="py-8 text-center text-muted-foreground">
-                      <div className="flex flex-col items-center gap-2">
-                        <Activity className="h-8 w-8 opacity-50" />
-                        <p>No trading signals generated yet</p>
-                        <p className="text-xs">Signals will appear when market conditions trigger EMA crosses or Donchian breakouts</p>
-                      </div>
-                    </td>
+                    <th className="py-2">Zeit</th>
+                    <th>Typ</th>
+                    <th>Regel</th>
+                    <th>Preis</th>
+                    <th>ADX</th>
+                    <th>ATR</th>
+                    <th></th>
                   </tr>
-                )}
-              </tbody>
-            </table>
-          </div>
-        </CardContent>
-      </Card>
+                </thead>
+                <tbody>
+                  {signals.map((s, i) => (
+                    <tr key={i} className="border-t border-border">
+                      <td className="py-2">{new Date(s.time*1000).toLocaleString()}</td>
+                      <td><Badge className={s.type === "BUY" ? "bg-green-600" : "bg-red-600"}>{s.type}</Badge></td>
+                      <td>{s.rule}</td>
+                      <td>{fmt(s.price, 2)}</td>
+                      <td>{s.adx ? fmt(s.adx,1) : "-"}</td>
+                      <td>{s.atr ? fmt(s.atr,2) : "-"}</td>
+                      <td><Button size="sm" variant="outline" onClick={()=>sendAlert(s)}>Alarm</Button></td>
+                    </tr>
+                  ))}
+                  {!signals.length && (<tr><td className="py-4" colSpan={7}>Noch keine Signale auf diesem Timeframe.</td></tr>)}
+                </tbody>
+              </table>
+            </div>
+          </CardContent>
+        </Card>
 
-      {/* Liquidations Heatmap */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <AlertTriangle className="h-5 w-5 text-warning" />
-            Liquidations Heatmap (Futures)
-          </CardTitle>
-        </CardHeader>
-        <CardContent>
-          <div className="grid grid-cols-2 md:grid-cols-6 gap-3 mb-4">
-            <div>
-              <Label className="text-xs">Range ±USD</Label>
-              <Input type="number" value={rangeUSD} onChange={e => setRangeUSD(parseFloat(e.target.value) || 0)} />
-            </div>
-            <div>
-              <Label className="text-xs">Bucket USD</Label>
-              <Input type="number" value={bucketUSD} onChange={e => setBucketUSD(parseFloat(e.target.value) || 1)} />
-            </div>
-            <div>
-              <Label className="text-xs">Time Columns</Label>
-              <Input type="number" value={heatCols} onChange={e => setHeatCols(parseInt(e.target.value) || 60)} />
-            </div>
-            <div className="col-span-3 text-xs text-muted-foreground">
-              Simulated liquidation data for demonstration. Shows liquidation intensity per price level over time.
-            </div>
-          </div>
-          <div className="w-full overflow-hidden rounded-lg border border-border">
-            <canvas 
-              ref={heatCanvasRef} 
-              width={900} 
-              height={260} 
-              className="w-full h-[260px] block"
-              style={{ backgroundColor: 'hsl(217, 33%, 6%)' }}
-            />
-          </div>
-        </CardContent>
-      </Card>
-
-      {/* Strategy Notes */}
-      <Card>
-        <CardHeader>
-          <CardTitle>Strategy & Notes</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <div className="space-y-3 text-sm">
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <Card>
+          <CardHeader className="pb-2"><CardTitle>Risk-Panel</CardTitle></CardHeader>
+          <CardContent className="space-y-3 text-sm">
+            <div className="grid grid-cols-2 gap-3">
               <div>
-                <h4 className="font-semibold mb-2">Technical Strategy</h4>
-                <ul className="list-disc pl-5 space-y-1 text-muted-foreground">
-                  <li>Donchian20 breakouts filtered by ADX &gt; 20 for trend confirmation</li>
-                  <li>EMA crossovers with Golden/Death cross signals</li>
-                  <li>ATR-based position sizing and stop losses</li>
-                  <li>Order book imbalance and liquidation data as context</li>
-                </ul>
+                <Label>Equity (USDT)</Label>
+                <Input type="number" value={equity} onChange={e=>setEquity(parseFloat(e.target.value)||0)} />
               </div>
               <div>
-                <h4 className="font-semibold mb-2">Risk Management</h4>
-                <ul className="list-disc pl-5 space-y-1 text-muted-foreground">
-                  <li>Fixed percentage risk per trade</li>
-                  <li>Dynamic stop losses based on ATR volatility</li>
-                  <li>Multiple take profit levels (1:1 and 2:1 R:R)</li>
-                  <li>No financial advice - educational purposes only</li>
-                </ul>
+                <Label>Risiko %</Label>
+                <Input type="number" step="0.1" value={riskPct} onChange={e=>setRiskPct(parseFloat(e.target.value)||0)} />
+              </div>
+              <div>
+                <Label>ATR-Multiplikator</Label>
+                <Input type="number" step="0.1" value={atrMult} onChange={e=>setAtrMult(parseFloat(e.target.value)||0)} />
+              </div>
+              <div className="flex items-end"><div>
+                <div className="text-xs text-muted-foreground">SL-Distanz</div>
+                <div className="font-mono">{fmt(slDistance,2)}</div>
+              </div></div>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <div className="text-xs text-muted-foreground">Größe (BTC)</div>
+                <div className="text-lg font-semibold">{fmt(qtyRounded,4)}</div>
+              </div>
+              <div>
+                <div className="text-xs text-muted-foreground">Risiko (USDT)</div>
+                <div className="text-lg font-semibold">{fmt(riskAmt,2)}</div>
               </div>
             </div>
-            <div className="mt-4 p-3 border rounded-lg bg-muted/20">
-              <div className="text-xs text-muted-foreground">
-                <strong>Data Sources:</strong> Real-time WebSocket feeds from Binance API • <strong>Status:</strong> All features working with simulated backend endpoints
+            <div className="border rounded p-2 space-y-1">
+              <div className="text-xs text-muted-foreground">Long Setup</div>
+              <div className="flex gap-3 text-sm"><span>SL</span><span className="font-mono">{fmt(stopPriceBuy,2)}</span><span>TP1</span><span className="font-mono">{fmt(tp1Buy,2)}</span><span>TP2</span><span className="font-mono">{fmt(tp2Buy,2)}</span></div>
+            </div>
+            <div className="border rounded p-2 space-y-1">
+              <div className="text-xs text-muted-foreground">Short Setup</div>
+              <div className="flex gap-3 text-sm"><span>SL</span><span className="font-mono">{fmt(stopPriceSell,2)}</span><span>TP1</span><span className="font-mono">{fmt(tp1Sell,2)}</span><span>TP2</span><span className="font-mono">{fmt(tp2Sell,2)}</span></div>
+            </div>
+            <div className="pt-2 space-y-2">
+              <Button variant="outline" className="w-full" onClick={() => alert("Backtest-Ansicht wird als nächstes ergänzt.")}>Backtest</Button>
+              <Button className="w-full" onClick={async()=>{
+                const s = await fetchAIScore();
+                if(s===null) alert("AI-Score: kein Backend"); else alert(`AI-Score: ${fmt(s*100,1)}%`);
+              }}>AI-Score (Stub)</Button>
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+
+      {/* KI Analyst Card */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        <Card className="lg:col-span-3">
+          <CardHeader className="pb-2"><CardTitle>KI‑Analyst</CardTitle></CardHeader>
+          <CardContent className="space-y-3 text-sm">
+            <div className="grid grid-cols-2 md:grid-cols-6 gap-3">
+              <div>
+                <div className="text-xs text-muted-foreground">Richtung</div>
+                <div className={`text-lg font-semibold ${ai.dir==="LONG"?"text-green-500":ai.dir==="SHORT"?"text-red-500":""}`}>{ai.dir}</div>
+              </div>
+              <div>
+                <div className="text-xs text-muted-foreground">Score</div>
+                <div className="font-mono">{fmt(ai.score*100,1)}%</div>
+              </div>
+              <div>
+                <div className="text-xs text-muted-foreground">Confidence</div>
+                <div className="font-mono">{fmt(ai.conf*100,1)}%</div>
+              </div>
+              <div>
+                <div className="text-xs text-muted-foreground">ATR</div>
+                <div className="font-mono">{fmt(lastAtr,2)}</div>
+              </div>
+              <div>
+                <div className="text-xs text-muted-foreground">ADX14</div>
+                <div className="font-mono">{fmt(pack.adx14.adx[iLast]||0,1)}</div>
+              </div>
+              <div>
+                <div className="text-xs text-muted-foreground">Liq@Spot</div>
+                <div className="font-mono">{fmt(liqNear/1000,1)}k</div>
               </div>
             </div>
-          </div>
+            <div className="text-xs text-muted-foreground">Begründungen: {ai.reasons.join(", ") || "—"}</div>
+
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+              <div className="border rounded p-2">
+                <div className="text-xs text-muted-foreground">Empfehlung</div>
+                <div className="text-sm">
+                  {ai.dir==="LONG" && `Long bevorzugt. Größe ≈ ${fmt(qtyRounded,4)} BTC. SL ${fmt(stopPriceBuy,2)} • TP1 ${fmt(tp1Buy,2)} • TP2 ${fmt(tp2Buy,2)}`}
+                  {ai.dir==="SHORT" && `Short bevorzugt. Größe ≈ ${fmt(qtyRounded,4)} BTC. SL ${fmt(stopPriceSell,2)} • TP1 ${fmt(tp1Sell,2)} • TP2 ${fmt(tp2Sell,2)}`}
+                  {ai.dir==="FLAT" && `Kein Edge. Warten.`}
+                </div>
+              </div>
+              <div className="border rounded p-2">
+                <div className="text-xs text-muted-foreground">Aktionen</div>
+                <div className="flex gap-2 mt-1">
+                  <Button size="sm" onClick={runAnalysis}>Analyse aktualisieren</Button>
+                  <Button size="sm" variant="outline" onClick={()=>{
+                    const now = Math.floor(Date.now()/1000);
+                    const sig: Signal = { time: now, type: ai.dir==="LONG"?"BUY":"SELL", rule: `AI ${Math.round(ai.score*100)}%`, price: lastPrice, adx: pack.adx14.adx[iLast], atr: lastAtr };
+                    if(ai.dir!=="FLAT") sendAlert(sig);
+                  }}>Alarm senden</Button>
+                </div>
+              </div>
+              <div className="border rounded p-2">
+                <div className="text-xs text-muted-foreground">Backend</div>
+                <div className="text-xs">Optionales Modell via <code>POST /api/infer</code>. Fällt auf Heuristik zurück, wenn nicht verfügbar.</div>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+
+      <Card>
+        <CardHeader className="pb-2"><CardTitle>Strategie & Hinweise</CardTitle></CardHeader>
+        <CardContent className="space-y-2 text-sm">
+          <ul className="list-disc pl-5 space-y-1">
+            <li>Donchian20 Breakouts nur bei ADX>20 filtern. Range = Mean-Reversion, Trend = Breakout.</li>
+            <li>Orderbuch-/Liquidationsdaten sind Kontext, keine alleinigen Trigger.</li>
+            <li>Positionsgröße aus ATR-basiertem Stop. Kein Finanzrat.</li>
+          </ul>
+          <div className="text-muted-foreground">Endpoints: POST /api/alerts, /api/infer</div>
         </CardContent>
       </Card>
     </div>
