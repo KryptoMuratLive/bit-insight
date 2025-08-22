@@ -53,6 +53,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { LineChart } from "lucide-react";
+import { PrecisionGate } from "@/components/PrecisionGate";
 
 // --- Types
 interface Candle { t: number; o: number; h: number; l: number; c: number; v: number }
@@ -1050,6 +1051,13 @@ export default function BTCTradingDashboard(){
           </div>
         </CardContent>
       </Card>
+
+      {/* Precision Gate */}
+      <PrecisionGate
+        symbol={symbol}
+        lastPrice={lastPrice}
+        getAIScore={fetchAIScore}
+      />
 
       <Card>
         <CardHeader className="pb-2"><CardTitle>Strategie & Hinweise</CardTitle></CardHeader>
