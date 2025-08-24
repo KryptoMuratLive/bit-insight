@@ -54,6 +54,14 @@ import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { LineChart } from "lucide-react";
 import { PrecisionGate } from "@/components/PrecisionGate";
+import { VolumeProfile } from "@/components/VolumeProfile";
+import { MarketStructure } from "@/components/MarketStructure";
+import { OrderFlow } from "@/components/OrderFlow";
+import { RiskManagement } from "@/components/RiskManagement";
+import { PatternRecognition } from "@/components/PatternRecognition";
+import { TradeJournal } from "@/components/TradeJournal";
+import { SentimentAnalysis } from "@/components/SentimentAnalysis";
+import { StrategyBacktest } from "@/components/StrategyBacktest";
 
 // --- Types
 interface Candle { t: number; o: number; h: number; l: number; c: number; v: number }
@@ -1052,11 +1060,52 @@ export default function BTCTradingDashboard(){
         </CardContent>
       </Card>
 
+      {/* Advanced Features Grid */}
+      <div className="grid grid-cols-1 lg:grid-cols-4 gap-4">
+        {/* Market Structure */}
+        <MarketStructure candles={candles} />
+        
+        {/* Volume Profile */}
+        <VolumeProfile candles={candles} lastPrice={lastPrice} />
+        
+        {/* Order Flow */}
+        <OrderFlow candles={candles} />
+        
+        {/* Pattern Recognition */}
+        <PatternRecognition candles={candles} />
+      </div>
+
+      {/* Risk Management & Analysis */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        {/* Risk Management */}
+        <RiskManagement 
+          symbol={symbol}
+          lastPrice={lastPrice}
+          atr={lastAtr}
+          equity={equity}
+        />
+        
+        {/* Sentiment Analysis */}
+        <SentimentAnalysis symbol={symbol} />
+        
+        {/* Strategy Backtest */}
+        <StrategyBacktest candles={candles} />
+      </div>
+
       {/* Precision Gate */}
       <PrecisionGate
         symbol={symbol}
         lastPrice={lastPrice}
         getAIScore={fetchAIScore}
+      />
+
+      {/* Trade Journal */}
+      <TradeJournal 
+        symbol={symbol}
+        lastPrice={lastPrice}
+        atr={lastAtr}
+        adx={pack.adx14.adx[iLast] || 0}
+        rsi={pack.rsi14[iLast] || 50}
       />
 
       <Card>
