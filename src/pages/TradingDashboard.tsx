@@ -62,6 +62,10 @@ import { PatternRecognition } from "@/components/PatternRecognition";
 import { TradeJournal } from "@/components/TradeJournal";
 import { SentimentAnalysis } from "@/components/SentimentAnalysis";
 import { StrategyBacktest } from "@/components/StrategyBacktest";
+import { MLPricePrediction } from "@/components/MLPricePrediction";
+import { NLPNewsAnalysis } from "@/components/NLPNewsAnalysis";
+import { ReinforcementLearning } from "@/components/ReinforcementLearning";
+import { CloudDeployment } from "@/components/CloudDeployment";
 
 // --- Types
 interface Candle { t: number; o: number; h: number; l: number; c: number; v: number }
@@ -1107,6 +1111,17 @@ export default function BTCTradingDashboard(){
         adx={pack.adx14.adx[iLast] || 0}
         rsi={pack.rsi14[iLast] || 50}
       />
+
+      {/* AI & Machine Learning Features */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <MLPricePrediction symbol={symbol} currentPrice={lastPrice} />
+        <NLPNewsAnalysis symbol={symbol} />
+      </div>
+      
+      <div className="grid grid-cols-1 gap-6">
+        <ReinforcementLearning symbol={symbol} marketData={candles} />
+        <CloudDeployment />
+      </div>
 
       <Card>
         <CardHeader className="pb-2"><CardTitle>Strategie & Hinweise</CardTitle></CardHeader>
