@@ -314,6 +314,24 @@ export default function BTCTradingDashboard(){
   type AIDir = "LONG" | "SHORT" | "FLAT";
   const [ai, setAi] = useState<{ dir: AIDir; score: number; conf: number; reasons: string[] }>({ dir: "FLAT", score: 0.5, conf: 0.0, reasons: [] });
 
+  // Backtest state
+  interface BacktestResult {
+    totalTrades: number;
+    winRate: number;
+    totalReturn: number;
+    maxDrawdown: number;
+    sharpeRatio: number;
+    trades: Array<{
+      entry: { time: number; price: number };
+      exit: { time: number; price: number; reason: string };
+      side: "BUY" | "SELL";
+      pnl: number;
+      duration: number;
+    }>;
+  }
+  const [backtestResult, setBacktestResult] = useState<BacktestResult | null>(null);
+  const [backtestRunning, setBacktestRunning] = useState(false);
+
   // --- Fetch initial candles via REST
   useEffect(() => {
     let active = true;
@@ -681,6 +699,162 @@ export default function BTCTradingDashboard(){
     setAi({ dir, score: blendedScore, conf: base.conf, reasons: ["heuristic", "backend"].concat(base.reasons) });
   }
 
+  // --- Backtest Engine
+  async function runBacktest(){
+    if(candles.length < 250) { alert("Nicht genug Daten für Backtest (min. 250 Kerzen)"); return; }
+    
+    setBacktestRunning(true);
+    setBacktestResult(null);
+    
+    // Simulate delay for processing
+    await new Promise(resolve => setTimeout(resolve, 500));
+    
+    try {
+      const trades: BacktestResult['trades'] = [];
+      let currentPosition: { side: "BUY" | "SELL"; entry: { time: number; price: number }; } | null = null;
+      let balance = equity;
+      const returns: number[] = [];
+      let maxBalance = equity;
+      let maxDrawdown = 0;
+      
+      // Generate all signals for backtest period
+      const backtestSignals: Signal[] = [];
+      for(let i = 210; i < candles.length - 1; i++){
+        const c = candles[i];
+        const closes = candles.slice(0, i+1).map(c => c.c);
+        const ema50Arr = ema(closes, 50);
+        const ema200Arr = ema(closes, 200);
+        const don = donchian(candles.slice(0, i+1), 20);
+        const adx14 = adx(candles.slice(0, i+1), 14);
+        const atr14 = atr(candles.slice(0, i+1), 14);
+        
+        // EMA cross signals
+        const prevCross = ema50Arr[i-1] - ema200Arr[i-1];
+        const nowCross = ema50Arr[i] - ema200Arr[i];
+        
+        if(prevCross < 0 && nowCross > 0 && adx14.adx[i] > 20) {
+          backtestSignals.push({ time: c.t, type: "BUY", rule: "Golden Cross + ADX>20", price: c.c, adx: adx14.adx[i], atr: atr14[i] });
+        }
+        if(prevCross > 0 && nowCross < 0 && adx14.adx[i] > 20) {
+          backtestSignals.push({ time: c.t, type: "SELL", rule: "Death Cross + ADX>20", price: c.c, adx: adx14.adx[i], atr: atr14[i] });
+        }
+        
+        // Donchian breakout signals
+        const brokeUp = c.c > don.hi[i-1] && adx14.adx[i] > 25;
+        const brokeDn = c.c < don.lo[i-1] && adx14.adx[i] > 25;
+        
+        if(brokeUp) {
+          backtestSignals.push({ time: c.t, type: "BUY", rule: "Donchian Breakout + ADX>25", price: c.c, adx: adx14.adx[i], atr: atr14[i] });
+        }
+        if(brokeDn) {
+          backtestSignals.push({ time: c.t, type: "SELL", rule: "Donchian Breakdown + ADX>25", price: c.c, adx: adx14.adx[i], atr: atr14[i] });
+        }
+      }
+      
+      // Process signals and simulate trades
+      for(const signal of backtestSignals){
+        const atrValue = signal.atr || 100;
+        const slDistance = atrValue * atrMult;
+        const riskAmount = balance * (riskPct/100);
+        const positionSize = slDistance > 0 ? riskAmount / slDistance : 0;
+        
+        // Close existing position if signal is opposite
+        if(currentPosition && currentPosition.side !== signal.type){
+          const exitPrice = signal.price;
+          const entryPrice = currentPosition.entry.price;
+          let pnl = 0;
+          
+          if(currentPosition.side === "BUY"){
+            pnl = (exitPrice - entryPrice) * positionSize;
+          } else {
+            pnl = (entryPrice - exitPrice) * positionSize;
+          }
+          
+          balance += pnl;
+          returns.push(pnl);
+          
+          trades.push({
+            entry: currentPosition.entry,
+            exit: { time: signal.time, price: exitPrice, reason: `Exit on ${signal.type} signal` },
+            side: currentPosition.side,
+            pnl,
+            duration: signal.time - currentPosition.entry.time
+          });
+          
+          // Update max balance and drawdown
+          if(balance > maxBalance) maxBalance = balance;
+          const drawdown = (maxBalance - balance) / maxBalance;
+          if(drawdown > maxDrawdown) maxDrawdown = drawdown;
+          
+          currentPosition = null;
+        }
+        
+        // Open new position if no current position
+        if(!currentPosition && positionSize > 0.001){
+          currentPosition = {
+            side: signal.type,
+            entry: { time: signal.time, price: signal.price }
+          };
+        }
+      }
+      
+      // Close any remaining position at last price
+      if(currentPosition){
+        const lastCandle = candles[candles.length - 1];
+        const exitPrice = lastCandle.c;
+        const entryPrice = currentPosition.entry.price;
+        const atrValue = pack.atr14[pack.atr14.length - 1] || 100;
+        const slDistance = atrValue * atrMult;
+        const riskAmount = balance * (riskPct/100);
+        const positionSize = slDistance > 0 ? riskAmount / slDistance : 0;
+        
+        let pnl = 0;
+        if(currentPosition.side === "BUY"){
+          pnl = (exitPrice - entryPrice) * positionSize;
+        } else {
+          pnl = (entryPrice - exitPrice) * positionSize;
+        }
+        
+        balance += pnl;
+        returns.push(pnl);
+        
+        trades.push({
+          entry: currentPosition.entry,
+          exit: { time: lastCandle.t, price: exitPrice, reason: "Position closed at end" },
+          side: currentPosition.side,
+          pnl,
+          duration: lastCandle.t - currentPosition.entry.time
+        });
+      }
+      
+      // Calculate metrics
+      const totalReturn = ((balance - equity) / equity) * 100;
+      const winningTrades = trades.filter(t => t.pnl > 0);
+      const winRate = trades.length > 0 ? (winningTrades.length / trades.length) * 100 : 0;
+      
+      // Calculate Sharpe ratio (simplified)
+      const avgReturn = returns.length > 0 ? returns.reduce((a, b) => a + b, 0) / returns.length : 0;
+      const stdDev = returns.length > 1 ? Math.sqrt(returns.reduce((sum, ret) => sum + Math.pow(ret - avgReturn, 2), 0) / (returns.length - 1)) : 1;
+      const sharpeRatio = stdDev > 0 ? avgReturn / stdDev : 0;
+      
+      const result: BacktestResult = {
+        totalTrades: trades.length,
+        winRate,
+        totalReturn,
+        maxDrawdown: maxDrawdown * 100,
+        sharpeRatio,
+        trades: trades.slice(-20) // Show last 20 trades
+      };
+      
+      setBacktestResult(result);
+      
+    } catch(error) {
+      alert("Fehler beim Backtest: " + error);
+    } finally {
+      setBacktestRunning(false);
+    }
+  }
+
   // --- UI helpers
   const changeTf = (tf: string) => setTimeframe(tf);
   const tfList = ["1m","5m","15m","1h","4h","1d"];
@@ -989,12 +1163,39 @@ export default function BTCTradingDashboard(){
               <div className="flex gap-3 text-sm"><span>SL</span><span className="font-mono">{fmt(stopPriceSell,2)}</span><span>TP1</span><span className="font-mono">{fmt(tp1Sell,2)}</span><span>TP2</span><span className="font-mono">{fmt(tp2Sell,2)}</span></div>
             </div>
             <div className="pt-2 space-y-2">
-              <Button variant="outline" className="w-full" onClick={() => alert("Backtest-Ansicht wird als nächstes ergänzt.")}>Backtest</Button>
+              <Button variant="outline" className="w-full" onClick={runBacktest} disabled={backtestRunning}>
+                {backtestRunning ? "Läuft..." : "Backtest Starten"}
+              </Button>
               <Button className="w-full" onClick={async()=>{
                 const s = await fetchAIScore();
                 if(s===null) alert("AI-Score: kein Backend"); else alert(`AI-Score: ${fmt(s*100,1)}%`);
               }}>AI-Score (Stub)</Button>
             </div>
+            
+            {backtestResult && (
+              <div className="mt-4 border rounded p-3 space-y-3">
+                <div className="text-sm font-semibold">Backtest Ergebnis</div>
+                <div className="grid grid-cols-2 gap-2 text-xs">
+                  <div>Trades: <span className="font-mono">{backtestResult.totalTrades}</span></div>
+                  <div>Win-Rate: <span className={`font-mono ${backtestResult.winRate >= 50 ? "text-green-500" : "text-red-500"}`}>{fmt(backtestResult.winRate,1)}%</span></div>
+                  <div>Return: <span className={`font-mono ${backtestResult.totalReturn >= 0 ? "text-green-500" : "text-red-500"}`}>{fmt(backtestResult.totalReturn,2)}%</span></div>
+                  <div>Max DD: <span className="font-mono text-red-500">-{fmt(backtestResult.maxDrawdown,2)}%</span></div>
+                </div>
+                <div className="text-xs">
+                  <div>Sharpe: <span className="font-mono">{fmt(backtestResult.sharpeRatio,2)}</span></div>
+                </div>
+                <div className="max-h-32 overflow-y-auto">
+                  <div className="text-xs font-semibold mb-1">Letzte Trades:</div>
+                  {backtestResult.trades.slice(-5).map((trade, i) => (
+                    <div key={i} className="text-xs flex justify-between border-t border-border pt-1">
+                      <span className={trade.side === "BUY" ? "text-green-500" : "text-red-500"}>{trade.side}</span>
+                      <span>{fmt(trade.entry.price,0)} → {fmt(trade.exit.price,0)}</span>
+                      <span className={trade.pnl >= 0 ? "text-green-500" : "text-red-500"}>{fmt(trade.pnl,2)}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
           </CardContent>
         </Card>
       </div>
