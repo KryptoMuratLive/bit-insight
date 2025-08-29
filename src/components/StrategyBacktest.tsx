@@ -175,6 +175,69 @@ export function StrategyBacktest({ candles }: StrategyBacktestProps) {
           }
         }
       }
+    } else if (strategy === "precision_gate") {
+      // Implement simplified precision gate strategy
+      const atr = (candles: typeof backtestData, period = 14): number[] => {
+        const trs: number[] = [];
+        for (let i = 1; i < candles.length; i++) {
+          const tr = Math.max(
+            candles[i].h - candles[i].l,
+            Math.abs(candles[i].h - candles[i-1].c),
+            Math.abs(candles[i].l - candles[i-1].c)
+          );
+          trs.push(tr);
+        }
+        return ema(trs, period);
+      };
+      
+      const atrValues = atr(backtestData);
+      const rsiValues = rsi(closes, 14);
+      
+      for (let i = 50; i < backtestData.length - 1; i++) {
+        const currentPrice = closes[i];
+        const currentATR = atrValues[i - 1] || 0;
+        const atrPercent = (currentATR / currentPrice) * 100;
+        const currentRSI = rsiValues[i];
+        
+        // Simplified gate logic
+        const highVolatility = atrPercent > 0.8;
+        const trendingCondition = currentRSI > 60 || currentRSI < 40;
+        const gateOpen = highVolatility && trendingCondition;
+        
+        if (!position && gateOpen) {
+          const side = currentRSI > 60 ? "LONG" : "SHORT";
+          position = { side, entry: currentPrice, index: i };
+        } else if (position) {
+          let shouldExit = false;
+          
+          // Exit on opposite signal or max hold time
+          if (position.side === "LONG" && currentRSI < 40) {
+            shouldExit = true;
+          } else if (position.side === "SHORT" && currentRSI > 60) {
+            shouldExit = true;
+          } else if (i - position.index > 12) { // Max 12 hour hold
+            shouldExit = true;
+          }
+          
+          if (shouldExit) {
+            const pnl = position.side === "LONG" ? 
+              currentPrice - position.entry : 
+              position.entry - currentPrice;
+            const pnlPercent = (pnl / position.entry) * 100;
+            
+            trades.push({
+              date: new Date(backtestData[i].t).toLocaleDateString(),
+              side: position.side,
+              entry: position.entry,
+              exit: currentPrice,
+              pnl: pnlPercent,
+              r: pnlPercent / riskPerTrade
+            });
+            
+            position = null;
+          }
+        }
+      }
     }
 
     // Calculate performance metrics
