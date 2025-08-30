@@ -61,6 +61,7 @@ import { RiskManagement } from "@/components/RiskManagement";
 import { PatternRecognition } from "@/components/PatternRecognition";
 import { TradeJournal } from "@/components/TradeJournal";
 import { StrategyBacktest } from "@/components/StrategyBacktest";
+import { MultiTimeframeAnalysis } from "@/components/MultiTimeframeAnalysis";
 
 // --- Types
 interface Candle { t: number; o: number; h: number; l: number; c: number; v: number }
@@ -1295,6 +1296,9 @@ export default function BTCTradingDashboard(){
         lastPrice={lastPrice}
         getAIScore={fetchAIScore}
       />
+
+      {/* Multi-Timeframe Analysis */}
+      <MultiTimeframeAnalysis symbol={symbol} />
 
       {/* Trade Journal */}
       <TradeJournal 
