@@ -276,7 +276,14 @@ export const MultiTimeframeAnalysis: React.FC<MultiTimeframeAnalysisProps> = ({ 
             </div>
 
             <p className="text-xs text-muted-foreground text-center">
-              Last updated: {new Date(data.timestamp).toLocaleTimeString()}
+              Last updated: {new Date(data.timestamp).toLocaleString('de-DE', {
+                year: 'numeric',
+                month: '2-digit',
+                day: '2-digit',
+                hour: '2-digit',
+                minute: '2-digit',
+                second: '2-digit'
+              })}
             </p>
           </>
         )}
