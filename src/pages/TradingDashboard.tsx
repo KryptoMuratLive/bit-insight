@@ -1270,7 +1270,7 @@ export default function BTCTradingDashboard(){
         <VolumeProfile symbol="BTCUSDT" timeframe="1h" />
         
         {/* Order Flow */}
-        <OrderFlow candles={candles} />
+        <OrderFlow symbol="BTCUSDT" timeframe="1m" />
         
         {/* Pattern Recognition */}
         <PatternRecognition symbol="BTCUSDT" timeframe="1h" />

@@ -19,6 +19,12 @@ verify_jwt = false
 [functions.pattern-recognition]
 verify_jwt = false
 
+[functions.order-flow-analysis]
+verify_jwt = false
+
+[functions.risk-management]
+verify_jwt = false
+
 [db]
 port = 54322
 shadow_port = 54320
