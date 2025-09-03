@@ -1267,13 +1267,13 @@ export default function BTCTradingDashboard(){
         <MarketStructure candles={candles} />
         
         {/* Volume Profile */}
-        <VolumeProfile candles={candles} lastPrice={lastPrice} />
+        <VolumeProfile symbol="BTCUSDT" timeframe="1h" />
         
         {/* Order Flow */}
         <OrderFlow candles={candles} />
         
         {/* Pattern Recognition */}
-        <PatternRecognition candles={candles} />
+        <PatternRecognition symbol="BTCUSDT" timeframe="1h" />
       </div>
 
       {/* Risk Management & Analysis */}
