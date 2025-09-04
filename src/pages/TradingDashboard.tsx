@@ -1281,8 +1281,6 @@ export default function BTCTradingDashboard(){
         {/* Risk Management */}
         <RiskManagement 
           symbol={symbol}
-          lastPrice={lastPrice}
-          atr={lastAtr}
           equity={equity}
         />
         
