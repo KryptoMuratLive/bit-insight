@@ -62,6 +62,8 @@ import { PatternRecognition } from "@/components/PatternRecognition";
 import { TradeJournal } from "@/components/TradeJournal";
 import { StrategyBacktest } from "@/components/StrategyBacktest";
 import { MultiTimeframeAnalysis } from "@/components/MultiTimeframeAnalysis";
+import { TradingGuide } from "@/components/TradingGuide";
+import { SignalAggregation } from "@/components/SignalAggregation";
 
 // --- Types
 interface Candle { t: number; o: number; h: number; l: number; c: number; v: number }
@@ -1261,6 +1263,17 @@ export default function BTCTradingDashboard(){
         </CardContent>
       </Card>
 
+      {/* Trading Guide */}
+      <TradingGuide />
+
+      {/* Signal Aggregation */}
+      <SignalAggregation 
+        symbol={symbol}
+        timeframe={timeframe}
+        equity={equity}
+        riskPercent={riskPct}
+      />
+
       {/* Advanced Features Grid */}
       <div className="grid grid-cols-1 lg:grid-cols-4 gap-4">
         {/* Market Structure */}
@@ -1307,24 +1320,6 @@ export default function BTCTradingDashboard(){
         rsi={pack.rsi14[iLast] || 50}
       />
 
-      <Card>
-        <CardHeader className="pb-2"><CardTitle>Strategie & Hinweise</CardTitle></CardHeader>
-        <CardContent className="space-y-2 text-sm">
-          <ul className="list-disc pl-5 space-y-1">
-            <li>✅ Live-Daten: BTC-Kerzen via Binance REST/WS, 24h-Stats, TF 1m–1d.</li>
-            <li>✅ Chart: TradingView Widget ohne voreingestellte Indikatoren (User kann selbst einstellen).</li>
-            <li>✅ Signale: Golden/Death Cross, Donchian-Breakout mit ADX-Filter; Alarm via POST /api/alerts.</li>
-            <li>✅ Orderbuch: Top-20 Depth, Imbalance-Meter.</li>
-            <li>✅ Liquidations-Heatmap: Futures @forceOrder mit Preis-/Zeit-Achsen, Tooltip, Filter.</li>
-            <li>✅ Risiko: Equity, Risiko-%, ATR-Stop, Positionsgröße, SL/TP für Long/Short.</li>
-            <li>✅ KI-Analyst: LONG/SHORT/FLAT, Score, Confidence; nutzt Indikatoren + OB-Imbalance + Liq@Spot.</li>
-            <li>✅ FVG: Fair-Value-Gaps (bull/bear) erkennen und anzeigen.</li>
-            <li>✅ Auto-Trendlinien: Aus Pivot-High/Low erstellt.</li>
-            <li>✅ Stubs: Backtest-Button, Endpunkte /api/infer und /api/alerts.</li>
-          </ul>
-          <div className="text-muted-foreground">Endpoints: POST /api/alerts, /api/infer</div>
-        </CardContent>
-      </Card>
     </div>
   );
 }
