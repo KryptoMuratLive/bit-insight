@@ -28,6 +28,9 @@ verify_jwt = false
 [functions.signal-aggregation]
 verify_jwt = false
 
+[functions.strategy-backtest]
+verify_jwt = false
+
 [db]
 port = 54322
 shadow_port = 54320

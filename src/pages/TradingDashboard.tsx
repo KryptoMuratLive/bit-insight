@@ -1298,7 +1298,7 @@ export default function BTCTradingDashboard(){
         />
         
         {/* Strategy Backtest */}
-        <StrategyBacktest candles={candles} />
+        <StrategyBacktest />
       </div>
 
       {/* Precision Gate */}

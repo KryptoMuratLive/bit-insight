@@ -1,441 +1,425 @@
-import React, { useState, useMemo } from "react";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Label } from "@/components/ui/label";
-import { Input } from "@/components/ui/input";
-import { Badge } from "@/components/ui/badge";
+import React, { useState } from 'react';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Badge } from '@/components/ui/badge';
+import { Separator } from '@/components/ui/separator';
+import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
+import { TrendingUp, TrendingDown, Target, DollarSign, Percent, AlertTriangle } from 'lucide-react';
+import { supabase } from '@/integrations/supabase/client';
+import { toast } from 'sonner';
 
-interface BacktestResult {
-  totalTrades: number;
-  winRate: number;
+interface BacktestParams {
+  symbol: string;
+  timeframe: string;
+  strategyType: 'EMA_CROSS' | 'RSI_OVERSOLD' | 'MACD_DIVERGENCE' | 'BOLLINGER_SQUEEZE';
+  startDate: string;
+  endDate: string;
+  initialCapital: number;
+  positionSize: number;
+}
+
+interface Trade {
+  entryTime: number;
+  exitTime: number;
+  entryPrice: number;
+  exitPrice: number;
+  type: 'LONG' | 'SHORT';
+  pnl: number;
+  pnlPercent: number;
+  size: number;
+}
+
+interface BacktestResults {
+  symbol: string;
+  strategy: string;
+  period: string;
+  initialCapital: number;
+  finalCapital: number;
   totalReturn: number;
-  maxDrawdown: number;
-  sharpeRatio: number;
+  totalReturnPercent: number;
+  totalTrades: number;
+  winningTrades: number;
+  losingTrades: number;
+  winRate: number;
   profitFactor: number;
-  avgWin: number;
-  avgLoss: number;
-  expectancy: number;
-  trades: Array<{
-    date: string;
-    side: "LONG" | "SHORT";
-    entry: number;
-    exit: number;
-    pnl: number;
-    r: number;
-  }>;
+  sharpeRatio: number;
+  maxDrawdown: number;
+  maxDrawdownPercent: number;
+  averageWin: number;
+  averageLoss: number;
+  largestWin: number;
+  largestLoss: number;
+  trades: Trade[];
+  equityCurve: Array<{ time: number; equity: number; drawdown: number }>;
 }
 
-interface StrategyBacktestProps {
-  candles: Array<{t: number; o: number; h: number; l: number; c: number; v: number}>;
-}
-
-export function StrategyBacktest({ candles }: StrategyBacktestProps) {
-  const [strategy, setStrategy] = useState("ema_cross");
-  const [lookback, setLookback] = useState(30); // days
-  const [riskPerTrade, setRiskPerTrade] = useState(2); // %
-  const [running, setRunning] = useState(false);
-  const [result, setResult] = useState<BacktestResult | null>(null);
-
-  // Helper functions for indicators
-  const ema = (values: number[], period: number): number[] => {
-    if(!values.length) return [];
-    const k = 2 / (period + 1);
-    const out: number[] = [];
-    let prev = values[0];
-    out.push(prev);
-    for(let i=1;i<values.length;i++){ prev = values[i]*k + prev*(1-k); out.push(prev); }
-    return out;
-  };
-
-  const rsi = (values: number[], period = 14): number[] => {
-    const gains = [0];
-    const losses = [0];
-    for (let i = 1; i < values.length; i++) {
-      const diff = values[i] - values[i - 1];
-      gains.push(Math.max(diff, 0));
-      losses.push(Math.max(-diff, 0));
-    }
-    const avgG = ema(gains, period);
-    const avgL = ema(losses, period);
-    return avgG.map((g, i) => {
-      const l = avgL[i] || 1e-8;
-      const rs = g / l;
-      return 100 - 100 / (1 + rs);
-    });
-  };
+export function StrategyBacktest() {
+  const [params, setParams] = useState<BacktestParams>({
+    symbol: 'BTCUSDT',
+    timeframe: '1h',
+    strategyType: 'EMA_CROSS',
+    startDate: '2024-01-01',
+    endDate: '2024-12-31',
+    initialCapital: 10000,
+    positionSize: 10
+  });
+  
+  const [results, setResults] = useState<BacktestResults | null>(null);
+  const [loading, setLoading] = useState(false);
 
   const runBacktest = async () => {
-    setRunning(true);
-    
-    // Simulate processing time
-    await new Promise(resolve => setTimeout(resolve, 1500));
-    
-    const backtestData = candles.slice(-lookback * 24); // Assuming hourly data
-    if (backtestData.length < 50) {
-      setRunning(false);
-      return;
-    }
-
-    const closes = backtestData.map(c => c.c);
-    const trades: BacktestResult['trades'] = [];
-    let position: { side: "LONG" | "SHORT"; entry: number; index: number } | null = null;
-    
-    // Strategy implementations
-    if (strategy === "ema_cross") {
-      const ema20 = ema(closes, 20);
-      const ema50 = ema(closes, 50);
-      
-      for (let i = 50; i < backtestData.length - 1; i++) {
-        const currentPrice = closes[i];
-        const prevEma20 = ema20[i - 1];
-        const currEma20 = ema20[i];
-        const prevEma50 = ema50[i - 1];
-        const currEma50 = ema50[i];
-        
-        // Entry signals
-        if (!position) {
-          // Bullish crossover
-          if (prevEma20 <= prevEma50 && currEma20 > currEma50) {
-            position = { side: "LONG", entry: currentPrice, index: i };
-          }
-          // Bearish crossover
-          else if (prevEma20 >= prevEma50 && currEma20 < currEma50) {
-            position = { side: "SHORT", entry: currentPrice, index: i };
-          }
-        }
-        // Exit signals
-        else {
-          let shouldExit = false;
-          let exitPrice = currentPrice;
-          
-          if (position.side === "LONG" && prevEma20 >= prevEma50 && currEma20 < currEma50) {
-            shouldExit = true;
-          } else if (position.side === "SHORT" && prevEma20 <= prevEma50 && currEma20 > currEma50) {
-            shouldExit = true;
-          }
-          
-          if (shouldExit) {
-            const pnl = position.side === "LONG" ? 
-              exitPrice - position.entry : 
-              position.entry - exitPrice;
-            const pnlPercent = (pnl / position.entry) * 100;
-            
-            trades.push({
-              date: new Date(backtestData[i].t).toLocaleDateString(),
-              side: position.side,
-              entry: position.entry,
-              exit: exitPrice,
-              pnl: pnlPercent,
-              r: pnlPercent / riskPerTrade
-            });
-            
-            position = null;
-          }
-        }
-      }
-    } else if (strategy === "rsi_mean_reversion") {
-      const rsiValues = rsi(closes, 14);
-      
-      for (let i = 20; i < backtestData.length - 1; i++) {
-        const currentPrice = closes[i];
-        const currentRSI = rsiValues[i];
-        
-        if (!position) {
-          if (currentRSI < 30) { // Oversold
-            position = { side: "LONG", entry: currentPrice, index: i };
-          } else if (currentRSI > 70) { // Overbought
-            position = { side: "SHORT", entry: currentPrice, index: i };
-          }
-        } else {
-          let shouldExit = false;
-          
-          if (position.side === "LONG" && currentRSI > 50) {
-            shouldExit = true;
-          } else if (position.side === "SHORT" && currentRSI < 50) {
-            shouldExit = true;
-          }
-          
-          if (shouldExit || i - position.index > 24) { // Max 24 hour hold
-            const pnl = position.side === "LONG" ? 
-              currentPrice - position.entry : 
-              position.entry - currentPrice;
-            const pnlPercent = (pnl / position.entry) * 100;
-            
-            trades.push({
-              date: new Date(backtestData[i].t).toLocaleDateString(),
-              side: position.side,
-              entry: position.entry,
-              exit: currentPrice,
-              pnl: pnlPercent,
-              r: pnlPercent / riskPerTrade
-            });
-            
-            position = null;
-          }
-        }
-      }
-    } else if (strategy === "precision_gate") {
-      // Implement simplified precision gate strategy
-      const atr = (candles: typeof backtestData, period = 14): number[] => {
-        const trs: number[] = [];
-        for (let i = 1; i < candles.length; i++) {
-          const tr = Math.max(
-            candles[i].h - candles[i].l,
-            Math.abs(candles[i].h - candles[i-1].c),
-            Math.abs(candles[i].l - candles[i-1].c)
-          );
-          trs.push(tr);
-        }
-        return ema(trs, period);
-      };
-      
-      const atrValues = atr(backtestData);
-      const rsiValues = rsi(closes, 14);
-      
-      for (let i = 50; i < backtestData.length - 1; i++) {
-        const currentPrice = closes[i];
-        const currentATR = atrValues[i - 1] || 0;
-        const atrPercent = (currentATR / currentPrice) * 100;
-        const currentRSI = rsiValues[i];
-        
-        // Simplified gate logic
-        const highVolatility = atrPercent > 0.8;
-        const trendingCondition = currentRSI > 60 || currentRSI < 40;
-        const gateOpen = highVolatility && trendingCondition;
-        
-        if (!position && gateOpen) {
-          const side = currentRSI > 60 ? "LONG" : "SHORT";
-          position = { side, entry: currentPrice, index: i };
-        } else if (position) {
-          let shouldExit = false;
-          
-          // Exit on opposite signal or max hold time
-          if (position.side === "LONG" && currentRSI < 40) {
-            shouldExit = true;
-          } else if (position.side === "SHORT" && currentRSI > 60) {
-            shouldExit = true;
-          } else if (i - position.index > 12) { // Max 12 hour hold
-            shouldExit = true;
-          }
-          
-          if (shouldExit) {
-            const pnl = position.side === "LONG" ? 
-              currentPrice - position.entry : 
-              position.entry - currentPrice;
-            const pnlPercent = (pnl / position.entry) * 100;
-            
-            trades.push({
-              date: new Date(backtestData[i].t).toLocaleDateString(),
-              side: position.side,
-              entry: position.entry,
-              exit: currentPrice,
-              pnl: pnlPercent,
-              r: pnlPercent / riskPerTrade
-            });
-            
-            position = null;
-          }
-        }
-      }
-    }
-
-    // Calculate performance metrics
-    if (trades.length > 0) {
-      const winningTrades = trades.filter(t => t.pnl > 0);
-      const losingTrades = trades.filter(t => t.pnl < 0);
-      
-      const winRate = (winningTrades.length / trades.length) * 100;
-      const totalReturn = trades.reduce((sum, t) => sum + t.pnl, 0);
-      
-      const avgWin = winningTrades.length > 0 ? 
-        winningTrades.reduce((sum, t) => sum + t.pnl, 0) / winningTrades.length : 0;
-      const avgLoss = losingTrades.length > 0 ? 
-        Math.abs(losingTrades.reduce((sum, t) => sum + t.pnl, 0) / losingTrades.length) : 0;
-      
-      const profitFactor = avgLoss > 0 ? (avgWin * winningTrades.length) / (avgLoss * losingTrades.length) : 0;
-      const expectancy = ((winRate / 100) * avgWin) - (((100 - winRate) / 100) * avgLoss);
-      
-      // Calculate max drawdown
-      let peak = 0;
-      let maxDD = 0;
-      let cumReturn = 0;
-      
-      trades.forEach(trade => {
-        cumReturn += trade.pnl;
-        if (cumReturn > peak) peak = cumReturn;
-        const drawdown = peak - cumReturn;
-        if (drawdown > maxDD) maxDD = drawdown;
+    setLoading(true);
+    try {
+      const { data, error } = await supabase.functions.invoke('strategy-backtest', {
+        body: params
       });
+
+      if (error) throw error;
       
-      // Simple Sharpe ratio calculation (assuming daily returns)
-      const returns = trades.map(t => t.pnl);
-      const avgReturn = returns.reduce((a, b) => a + b, 0) / returns.length;
-      const stdDev = Math.sqrt(returns.reduce((sum, r) => sum + Math.pow(r - avgReturn, 2), 0) / returns.length);
-      const sharpeRatio = stdDev > 0 ? (avgReturn / stdDev) * Math.sqrt(252) : 0; // Annualized
-      
-      setResult({
-        totalTrades: trades.length,
-        winRate,
-        totalReturn,
-        maxDrawdown: maxDD,
-        sharpeRatio,
-        profitFactor,
-        avgWin,
-        avgLoss,
-        expectancy,
-        trades: trades.slice(-10) // Last 10 trades
-      });
+      setResults(data);
+      toast.success('Backtest completed successfully');
+    } catch (error) {
+      console.error('Backtest error:', error);
+      toast.error('Failed to run backtest');
+    } finally {
+      setLoading(false);
     }
-    
-    setRunning(false);
+  };
+
+  const formatCurrency = (value: number) => 
+    new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(value);
+
+  const formatPercent = (value: number) => `${value.toFixed(2)}%`;
+
+  const formatDate = (timestamp: number) => 
+    new Date(timestamp).toLocaleDateString();
+
+  const getStrategyName = (strategy: string) => {
+    const names = {
+      'EMA_CROSS': 'EMA Crossover',
+      'RSI_OVERSOLD': 'RSI Oversold/Overbought',
+      'MACD_DIVERGENCE': 'MACD Signal Cross',
+      'BOLLINGER_SQUEEZE': 'Bollinger Band Squeeze'
+    };
+    return names[strategy as keyof typeof names] || strategy;
   };
 
   return (
-    <Card>
-      <CardHeader className="pb-2">
-        <CardTitle className="text-sm">Strategy Backtesting</CardTitle>
-      </CardHeader>
-      <CardContent className="space-y-4">
-        {/* Strategy Configuration */}
-        <div className="space-y-3">
-          <div className="grid grid-cols-2 gap-3">
+    <div className="space-y-6">
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <Target className="h-5 w-5" />
+            Strategy Backtest
+          </CardTitle>
+          <CardDescription>
+            Test trading strategies with historical data and analyze performance metrics
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-6">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             <div className="space-y-2">
-              <Label className="text-xs">Strategy</Label>
-              <Select value={strategy} onValueChange={setStrategy}>
-                <SelectTrigger className="h-8">
+              <Label htmlFor="symbol">Symbol</Label>
+              <Input
+                id="symbol"
+                value={params.symbol}
+                onChange={(e) => setParams(prev => ({ ...prev, symbol: e.target.value }))}
+                placeholder="BTCUSDT"
+              />
+            </div>
+            
+            <div className="space-y-2">
+              <Label htmlFor="timeframe">Timeframe</Label>
+              <Select value={params.timeframe} onValueChange={(value) => setParams(prev => ({ ...prev, timeframe: value }))}>
+                <SelectTrigger>
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="ema_cross">EMA Crossover</SelectItem>
-                  <SelectItem value="rsi_mean_reversion">RSI Mean Reversion</SelectItem>
-                  <SelectItem value="precision_gate">Precision Gate</SelectItem>
+                  <SelectItem value="1m">1 Minute</SelectItem>
+                  <SelectItem value="5m">5 Minutes</SelectItem>
+                  <SelectItem value="15m">15 Minutes</SelectItem>
+                  <SelectItem value="1h">1 Hour</SelectItem>
+                  <SelectItem value="4h">4 Hours</SelectItem>
+                  <SelectItem value="1d">1 Day</SelectItem>
                 </SelectContent>
               </Select>
             </div>
+            
             <div className="space-y-2">
-              <Label className="text-xs">Lookback (days)</Label>
+              <Label htmlFor="strategy">Strategy</Label>
+              <Select value={params.strategyType} onValueChange={(value: any) => setParams(prev => ({ ...prev, strategyType: value }))}>
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="EMA_CROSS">EMA Crossover</SelectItem>
+                  <SelectItem value="RSI_OVERSOLD">RSI Oversold/Overbought</SelectItem>
+                  <SelectItem value="MACD_DIVERGENCE">MACD Signal Cross</SelectItem>
+                  <SelectItem value="BOLLINGER_SQUEEZE">Bollinger Band Squeeze</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+            <div className="space-y-2">
+              <Label htmlFor="startDate">Start Date</Label>
               <Input
+                id="startDate"
+                type="date"
+                value={params.startDate}
+                onChange={(e) => setParams(prev => ({ ...prev, startDate: e.target.value }))}
+              />
+            </div>
+            
+            <div className="space-y-2">
+              <Label htmlFor="endDate">End Date</Label>
+              <Input
+                id="endDate"
+                type="date"
+                value={params.endDate}
+                onChange={(e) => setParams(prev => ({ ...prev, endDate: e.target.value }))}
+              />
+            </div>
+            
+            <div className="space-y-2">
+              <Label htmlFor="capital">Initial Capital ($)</Label>
+              <Input
+                id="capital"
                 type="number"
-                value={lookback}
-                onChange={(e) => setLookback(Number(e.target.value))}
-                className="h-8"
-                min="7"
-                max="90"
+                value={params.initialCapital}
+                onChange={(e) => setParams(prev => ({ ...prev, initialCapital: Number(e.target.value) }))}
+              />
+            </div>
+            
+            <div className="space-y-2">
+              <Label htmlFor="positionSize">Position Size (%)</Label>
+              <Input
+                id="positionSize"
+                type="number"
+                value={params.positionSize}
+                onChange={(e) => setParams(prev => ({ ...prev, positionSize: Number(e.target.value) }))}
+                min="1"
+                max="100"
               />
             </div>
           </div>
-          
-          <div className="space-y-2">
-            <Label className="text-xs">Risk per Trade (%)</Label>
-            <Input
-              type="number"
-              value={riskPerTrade}
-              onChange={(e) => setRiskPerTrade(Number(e.target.value))}
-              className="h-8"
-              min="0.5"
-              max="10"
-              step="0.5"
-            />
-          </div>
-          
-          <Button 
-            onClick={runBacktest} 
-            disabled={running || candles.length < 100}
-            className="w-full"
-            size="sm"
-          >
-            {running ? "Running Backtest..." : "Run Backtest"}
+
+          <Button onClick={runBacktest} disabled={loading} className="w-full">
+            {loading ? 'Running Backtest...' : 'Run Backtest'}
           </Button>
-        </div>
+        </CardContent>
+      </Card>
 
-        {/* Results */}
-        {result && (
-          <div className="space-y-3">
-            <div className="text-xs font-medium">Backtest Results</div>
-            
-            {/* Key Metrics */}
-            <div className="grid grid-cols-2 gap-2 text-xs">
-              <div className="border rounded p-2">
-                <div className="text-muted-foreground">Total Return</div>
-                <div className={result.totalReturn >= 0 ? "text-green-500" : "text-red-500"}>
-                  {result.totalReturn.toFixed(2)}%
+      {results && (
+        <div className="space-y-6">
+          {/* Performance Overview */}
+          <Card>
+            <CardHeader>
+              <CardTitle>Performance Overview</CardTitle>
+              <CardDescription>
+                {getStrategyName(results.strategy)} • {results.symbol} • {results.period}
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                <div className="text-center p-4 bg-muted/50 rounded-lg">
+                  <div className="text-2xl font-bold text-primary">
+                    {formatCurrency(results.finalCapital)}
+                  </div>
+                  <div className="text-sm text-muted-foreground">Final Capital</div>
+                </div>
+                
+                <div className="text-center p-4 bg-muted/50 rounded-lg">
+                  <div className={`text-2xl font-bold ${results.totalReturnPercent >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                    {formatPercent(results.totalReturnPercent)}
+                  </div>
+                  <div className="text-sm text-muted-foreground">Total Return</div>
+                </div>
+                
+                <div className="text-center p-4 bg-muted/50 rounded-lg">
+                  <div className="text-2xl font-bold text-primary">
+                    {formatPercent(results.winRate)}
+                  </div>
+                  <div className="text-sm text-muted-foreground">Win Rate</div>
+                </div>
+                
+                <div className="text-center p-4 bg-muted/50 rounded-lg">
+                  <div className="text-2xl font-bold text-primary">
+                    {results.profitFactor.toFixed(2)}
+                  </div>
+                  <div className="text-sm text-muted-foreground">Profit Factor</div>
                 </div>
               </div>
-              <div className="border rounded p-2">
-                <div className="text-muted-foreground">Win Rate</div>
-                <div>{result.winRate.toFixed(1)}%</div>
-              </div>
-              <div className="border rounded p-2">
-                <div className="text-muted-foreground">Sharpe Ratio</div>
-                <div>{result.sharpeRatio.toFixed(2)}</div>
-              </div>
-              <div className="border rounded p-2">
-                <div className="text-muted-foreground">Max Drawdown</div>
-                <div className="text-red-500">{result.maxDrawdown.toFixed(2)}%</div>
-              </div>
-              <div className="border rounded p-2">
-                <div className="text-muted-foreground">Profit Factor</div>
-                <div>{result.profitFactor.toFixed(2)}</div>
-              </div>
-              <div className="border rounded p-2">
-                <div className="text-muted-foreground">Total Trades</div>
-                <div>{result.totalTrades}</div>
-              </div>
-            </div>
+            </CardContent>
+          </Card>
 
-            {/* Performance Summary */}
-            <div className="border rounded p-3 space-y-2">
-              <div className="text-xs font-medium">Performance Summary</div>
-              <div className="grid grid-cols-2 gap-2 text-xs">
-                <div>Avg Win: <span className="text-green-500">{result.avgWin.toFixed(2)}%</span></div>
-                <div>Avg Loss: <span className="text-red-500">{result.avgLoss.toFixed(2)}%</span></div>
-                <div>Expectancy: <span className={result.expectancy >= 0 ? "text-green-500" : "text-red-500"}>{result.expectancy.toFixed(2)}%</span></div>
-                <div>
-                  Rating: <Badge variant={
-                    result.sharpeRatio > 1.5 ? "default" : 
-                    result.sharpeRatio > 1 ? "secondary" : 
-                    "destructive"
-                  }>
-                    {result.sharpeRatio > 1.5 ? "Excellent" : result.sharpeRatio > 1 ? "Good" : "Poor"}
-                  </Badge>
+          {/* Detailed Metrics */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  <DollarSign className="h-5 w-5" />
+                  Trading Metrics
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="flex justify-between">
+                  <span>Total Trades:</span>
+                  <span className="font-medium">{results.totalTrades}</span>
                 </div>
-              </div>
-            </div>
+                
+                <div className="flex justify-between">
+                  <span>Winning Trades:</span>
+                  <span className="font-medium text-green-600">{results.winningTrades}</span>
+                </div>
+                
+                <div className="flex justify-between">
+                  <span>Losing Trades:</span>
+                  <span className="font-medium text-red-600">{results.losingTrades}</span>
+                </div>
+                
+                <Separator />
+                
+                <div className="flex justify-between">
+                  <span>Average Win:</span>
+                  <span className="font-medium text-green-600">{formatCurrency(results.averageWin)}</span>
+                </div>
+                
+                <div className="flex justify-between">
+                  <span>Average Loss:</span>
+                  <span className="font-medium text-red-600">{formatCurrency(results.averageLoss)}</span>
+                </div>
+                
+                <div className="flex justify-between">
+                  <span>Largest Win:</span>
+                  <span className="font-medium text-green-600">{formatCurrency(results.largestWin)}</span>
+                </div>
+                
+                <div className="flex justify-between">
+                  <span>Largest Loss:</span>
+                  <span className="font-medium text-red-600">{formatCurrency(results.largestLoss)}</span>
+                </div>
+              </CardContent>
+            </Card>
 
-            {/* Recent Trades */}
-            <div className="space-y-2">
-              <div className="text-xs font-medium">Recent Trades</div>
-              <div className="max-h-32 overflow-y-auto space-y-1">
-                {result.trades.map((trade, i) => (
-                  <div key={i} className="flex items-center justify-between p-1 border rounded text-xs">
-                    <div className="flex items-center gap-2">
-                      <Badge variant={trade.side === "LONG" ? "default" : "destructive"}>
-                        {trade.side}
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  <Percent className="h-5 w-5" />
+                  Risk Metrics
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="flex justify-between">
+                  <span>Sharpe Ratio:</span>
+                  <span className="font-medium">{results.sharpeRatio.toFixed(2)}</span>
+                </div>
+                
+                <div className="flex justify-between">
+                  <span>Max Drawdown:</span>
+                  <span className="font-medium text-red-600">{formatCurrency(results.maxDrawdown)}</span>
+                </div>
+                
+                <div className="flex justify-between">
+                  <span>Max Drawdown %:</span>
+                  <span className="font-medium text-red-600">{formatPercent(results.maxDrawdownPercent)}</span>
+                </div>
+                
+                <Separator />
+                
+                <div className="p-3 bg-amber-50 dark:bg-amber-950/20 rounded-lg border border-amber-200 dark:border-amber-800">
+                  <div className="flex items-center gap-2 text-amber-800 dark:text-amber-200">
+                    <AlertTriangle className="h-4 w-4" />
+                    <span className="text-sm font-medium">Risk Assessment</span>
+                  </div>
+                  <p className="text-sm text-amber-700 dark:text-amber-300 mt-1">
+                    {results.maxDrawdownPercent > 20 ? 'High Risk: Consider reducing position size' :
+                     results.maxDrawdownPercent > 10 ? 'Moderate Risk: Monitor closely' :
+                     'Low Risk: Well-controlled risk profile'}
+                  </p>
+                </div>
+              </CardContent>
+            </Card>
+          </div>
+
+          {/* Equity Curve */}
+          <Card>
+            <CardHeader>
+              <CardTitle>Equity Curve</CardTitle>
+              <CardDescription>Portfolio value over time</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <div className="h-64">
+                <ResponsiveContainer width="100%" height="100%">
+                  <LineChart data={results.equityCurve.map(point => ({
+                    ...point,
+                    date: formatDate(point.time)
+                  }))}>
+                    <CartesianGrid strokeDasharray="3 3" />
+                    <XAxis dataKey="date" />
+                    <YAxis />
+                    <Tooltip 
+                      formatter={(value, name) => [
+                        name === 'equity' ? formatCurrency(value as number) : formatPercent(value as number),
+                        name === 'equity' ? 'Portfolio Value' : 'Drawdown'
+                      ]}
+                    />
+                    <Line 
+                      type="monotone" 
+                      dataKey="equity" 
+                      stroke="hsl(var(--primary))" 
+                      strokeWidth={2}
+                      dot={false}
+                    />
+                  </LineChart>
+                </ResponsiveContainer>
+              </div>
+            </CardContent>
+          </Card>
+
+          {/* Recent Trades */}
+          <Card>
+            <CardHeader>
+              <CardTitle>Recent Trades</CardTitle>
+              <CardDescription>Last 10 trades from the backtest</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <div className="space-y-2">
+                {results.trades.slice(-10).reverse().map((trade, index) => (
+                  <div key={index} className="flex items-center justify-between p-3 bg-muted/50 rounded-lg">
+                    <div className="flex items-center gap-3">
+                      <Badge variant={trade.pnl >= 0 ? "default" : "destructive"}>
+                        {trade.type}
                       </Badge>
-                      <span className="text-muted-foreground">{trade.date}</span>
+                      <div>
+                        <div className="text-sm font-medium">
+                          {formatDate(trade.entryTime)} → {formatDate(trade.exitTime)}
+                        </div>
+                        <div className="text-xs text-muted-foreground">
+                          ${trade.entryPrice.toFixed(2)} → ${trade.exitPrice.toFixed(2)}
+                        </div>
+                      </div>
                     </div>
-                    <div className="flex items-center gap-2">
-                      <span className={trade.pnl >= 0 ? "text-green-500" : "text-red-500"}>
-                        {trade.pnl.toFixed(2)}%
-                      </span>
-                      <span className="text-muted-foreground">
-                        {trade.r.toFixed(1)}R
-                      </span>
+                    
+                    <div className="text-right">
+                      <div className={`font-medium ${trade.pnl >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                        {formatCurrency(trade.pnl)}
+                      </div>
+                      <div className={`text-xs ${trade.pnl >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                        {formatPercent(trade.pnlPercent)}
+                      </div>
                     </div>
                   </div>
                 ))}
               </div>
-            </div>
-          </div>
-        )}
-
-        {candles.length < 100 && (
-          <div className="text-xs text-muted-foreground text-center">
-            Need more data for backtesting
-          </div>
-        )}
-      </CardContent>
-    </Card>
+            </CardContent>
+          </Card>
+        </div>
+      )}
+    </div>
   );
 }
