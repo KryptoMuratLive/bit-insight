@@ -155,10 +155,18 @@ export function StrategyBacktest() {
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="EMA_CROSS">EMA Crossover</SelectItem>
+                  <SelectItem value="EMA_CROSS">EMA Crossover (12/26)</SelectItem>
+                  <SelectItem value="SMA_CROSS">SMA Crossover (20/50)</SelectItem>
                   <SelectItem value="RSI_OVERSOLD">RSI Oversold/Overbought</SelectItem>
+                  <SelectItem value="STOCHASTIC_OVERSOLD">Stochastic Oversold/Overbought</SelectItem>
+                  <SelectItem value="WILLIAMS_R">Williams %R Reversal</SelectItem>
                   <SelectItem value="MACD_DIVERGENCE">MACD Signal Cross</SelectItem>
+                  <SelectItem value="CCI_REVERSAL">CCI Reversal Strategy</SelectItem>
                   <SelectItem value="BOLLINGER_SQUEEZE">Bollinger Band Squeeze</SelectItem>
+                  <SelectItem value="ICHIMOKU_CLOUD">Ichimoku Cloud Strategy</SelectItem>
+                  <SelectItem value="PARABOLIC_SAR">Parabolic SAR Reversal</SelectItem>
+                  <SelectItem value="VOLUME_BREAKOUT">Volume Breakout Strategy</SelectItem>
+                  <SelectItem value="MOMENTUM_REVERSAL">Momentum Reversal Strategy</SelectItem>
                 </SelectContent>
               </Select>
             </div>

@@ -9,7 +9,7 @@ const corsHeaders = {
 interface BacktestParams {
   symbol: string;
   timeframe: string;
-  strategyType: 'EMA_CROSS' | 'RSI_OVERSOLD' | 'MACD_DIVERGENCE' | 'BOLLINGER_SQUEEZE';
+  strategyType: 'EMA_CROSS' | 'RSI_OVERSOLD' | 'MACD_DIVERGENCE' | 'BOLLINGER_SQUEEZE' | 'SMA_CROSS' | 'STOCHASTIC_OVERSOLD' | 'WILLIAMS_R' | 'CCI_REVERSAL' | 'ICHIMOKU_CLOUD' | 'PARABOLIC_SAR' | 'VOLUME_BREAKOUT' | 'MOMENTUM_REVERSAL';
   startDate: string;
   endDate: string;
   initialCapital: number;
@@ -118,14 +118,26 @@ async function fetchHistoricalData(symbol: string, interval: string, startDate: 
 
 function calculateTechnicalIndicators(klineData: any[]) {
   const closes = klineData.map(k => k.close);
+  const highs = klineData.map(k => k.high);
+  const lows = klineData.map(k => k.low);
+  const volumes = klineData.map(k => k.volume);
   
   return klineData.map((candle, i) => ({
     ...candle,
     ema12: calculateEMA(closes.slice(0, i + 1), 12),
     ema26: calculateEMA(closes.slice(0, i + 1), 26),
+    sma20: calculateSMA(closes.slice(0, i + 1), 20),
+    sma50: calculateSMA(closes.slice(0, i + 1), 50),
     rsi: calculateRSI(closes.slice(0, i + 1), 14),
     macd: calculateMACD(closes.slice(0, i + 1)),
-    bb: calculateBollingerBands(closes.slice(0, i + 1), 20, 2)
+    bb: calculateBollingerBands(closes.slice(0, i + 1), 20, 2),
+    stochastic: calculateStochastic(highs.slice(0, i + 1), lows.slice(0, i + 1), closes.slice(0, i + 1), 14),
+    williamsR: calculateWilliamsR(highs.slice(0, i + 1), lows.slice(0, i + 1), closes.slice(0, i + 1), 14),
+    cci: calculateCCI(highs.slice(0, i + 1), lows.slice(0, i + 1), closes.slice(0, i + 1), 20),
+    ichimoku: calculateIchimoku(highs.slice(0, i + 1), lows.slice(0, i + 1), closes.slice(0, i + 1)),
+    sar: calculateParabolicSAR(highs.slice(0, i + 1), lows.slice(0, i + 1), 0.02, 0.2),
+    volumeAvg: calculateSMA(volumes.slice(0, i + 1), 20),
+    momentum: calculateMomentum(closes.slice(0, i + 1), 10)
   }));
 }
 
@@ -193,6 +205,94 @@ function calculateBollingerBands(prices: number[], period: number, stdDev: numbe
   };
 }
 
+function calculateSMA(prices: number[], period: number): number {
+  if (prices.length < period) return prices[prices.length - 1] || 0;
+  const recentPrices = prices.slice(-period);
+  return recentPrices.reduce((sum, price) => sum + price, 0) / period;
+}
+
+function calculateStochastic(highs: number[], lows: number[], closes: number[], period: number) {
+  if (highs.length < period) return { k: 50, d: 50 };
+  
+  const recentHighs = highs.slice(-period);
+  const recentLows = lows.slice(-period);
+  const currentClose = closes[closes.length - 1];
+  
+  const highestHigh = Math.max(...recentHighs);
+  const lowestLow = Math.min(...recentLows);
+  
+  const k = ((currentClose - lowestLow) / (highestHigh - lowestLow)) * 100;
+  const d = k * 0.8; // Simplified D calculation
+  
+  return { k, d };
+}
+
+function calculateWilliamsR(highs: number[], lows: number[], closes: number[], period: number): number {
+  if (highs.length < period) return -50;
+  
+  const recentHighs = highs.slice(-period);
+  const recentLows = lows.slice(-period);
+  const currentClose = closes[closes.length - 1];
+  
+  const highestHigh = Math.max(...recentHighs);
+  const lowestLow = Math.min(...recentLows);
+  
+  return ((highestHigh - currentClose) / (highestHigh - lowestLow)) * -100;
+}
+
+function calculateCCI(highs: number[], lows: number[], closes: number[], period: number): number {
+  if (highs.length < period) return 0;
+  
+  const typicalPrices = highs.map((high, i) => (high + lows[i] + closes[i]) / 3);
+  const sma = calculateSMA(typicalPrices, period);
+  const meanDeviation = typicalPrices.slice(-period).reduce((sum, tp) => sum + Math.abs(tp - sma), 0) / period;
+  
+  const currentTP = typicalPrices[typicalPrices.length - 1];
+  return (currentTP - sma) / (0.015 * meanDeviation);
+}
+
+function calculateIchimoku(highs: number[], lows: number[], closes: number[]) {
+  if (highs.length < 26) return { tenkanSen: 0, kijunSen: 0, senkouSpanA: 0, senkouSpanB: 0 };
+  
+  // Tenkan-sen (9-period)
+  const tenkanHigh = Math.max(...highs.slice(-9));
+  const tenkanLow = Math.min(...lows.slice(-9));
+  const tenkanSen = (tenkanHigh + tenkanLow) / 2;
+  
+  // Kijun-sen (26-period)
+  const kijunHigh = Math.max(...highs.slice(-26));
+  const kijunLow = Math.min(...lows.slice(-26));
+  const kijunSen = (kijunHigh + kijunLow) / 2;
+  
+  // Senkou Span A
+  const senkouSpanA = (tenkanSen + kijunSen) / 2;
+  
+  // Senkou Span B (52-period)
+  const spanBHigh = highs.length >= 52 ? Math.max(...highs.slice(-52)) : Math.max(...highs);
+  const spanBLow = lows.length >= 52 ? Math.min(...lows.slice(-52)) : Math.min(...lows);
+  const senkouSpanB = (spanBHigh + spanBLow) / 2;
+  
+  return { tenkanSen, kijunSen, senkouSpanA, senkouSpanB };
+}
+
+function calculateParabolicSAR(highs: number[], lows: number[], accelerationFactor: number, maxAF: number): number {
+  if (highs.length < 2) return lows[lows.length - 1] || 0;
+  
+  // Simplified SAR calculation
+  const currentHigh = highs[highs.length - 1];
+  const currentLow = lows[lows.length - 1];
+  const previousLow = lows[lows.length - 2];
+  
+  return previousLow + (accelerationFactor * (currentHigh - previousLow));
+}
+
+function calculateMomentum(prices: number[], period: number): number {
+  if (prices.length < period + 1) return 0;
+  const current = prices[prices.length - 1];
+  const previous = prices[prices.length - 1 - period];
+  return ((current - previous) / previous) * 100;
+}
+
 function generateTradingSignals(technicalData: any[], strategyType: string) {
   const signals: Array<{ index: number; type: 'BUY' | 'SELL'; reason: string }> = [];
   
@@ -228,12 +328,88 @@ function generateTradingSignals(technicalData: any[], strategyType: string) {
         }
         break;
         
-      case 'BOLLINGER_SQUEEZE':
+        case 'BOLLINGER_SQUEEZE':
         // Bollinger Band squeeze strategy
         if (current.close <= current.bb.lower) {
           signals.push({ index: i, type: 'BUY', reason: 'Bollinger Lower Band Touch' });
         } else if (current.close >= current.bb.upper) {
           signals.push({ index: i, type: 'SELL', reason: 'Bollinger Upper Band Touch' });
+        }
+        break;
+        
+      case 'SMA_CROSS':
+        // SMA 20/50 crossover strategy
+        if (previous.sma20 <= previous.sma50 && current.sma20 > current.sma50) {
+          signals.push({ index: i, type: 'BUY', reason: 'SMA Bullish Cross' });
+        } else if (previous.sma20 >= previous.sma50 && current.sma20 < current.sma50) {
+          signals.push({ index: i, type: 'SELL', reason: 'SMA Bearish Cross' });
+        }
+        break;
+        
+      case 'STOCHASTIC_OVERSOLD':
+        // Stochastic oversold/overbought strategy
+        if (previous.stochastic.k <= 20 && current.stochastic.k > 20) {
+          signals.push({ index: i, type: 'BUY', reason: 'Stochastic Oversold Recovery' });
+        } else if (previous.stochastic.k >= 80 && current.stochastic.k < 80) {
+          signals.push({ index: i, type: 'SELL', reason: 'Stochastic Overbought Reversal' });
+        }
+        break;
+        
+      case 'WILLIAMS_R':
+        // Williams %R strategy
+        if (previous.williamsR <= -80 && current.williamsR > -80) {
+          signals.push({ index: i, type: 'BUY', reason: 'Williams %R Oversold Recovery' });
+        } else if (previous.williamsR >= -20 && current.williamsR < -20) {
+          signals.push({ index: i, type: 'SELL', reason: 'Williams %R Overbought Reversal' });
+        }
+        break;
+        
+      case 'CCI_REVERSAL':
+        // CCI reversal strategy
+        if (previous.cci <= -100 && current.cci > -100) {
+          signals.push({ index: i, type: 'BUY', reason: 'CCI Oversold Reversal' });
+        } else if (previous.cci >= 100 && current.cci < 100) {
+          signals.push({ index: i, type: 'SELL', reason: 'CCI Overbought Reversal' });
+        }
+        break;
+        
+      case 'ICHIMOKU_CLOUD':
+        // Ichimoku cloud strategy
+        if (current.close > current.ichimoku.senkouSpanA && current.close > current.ichimoku.senkouSpanB) {
+          if (current.ichimoku.tenkanSen > current.ichimoku.kijunSen) {
+            signals.push({ index: i, type: 'BUY', reason: 'Ichimoku Bullish Above Cloud' });
+          }
+        } else if (current.close < current.ichimoku.senkouSpanA && current.close < current.ichimoku.senkouSpanB) {
+          if (current.ichimoku.tenkanSen < current.ichimoku.kijunSen) {
+            signals.push({ index: i, type: 'SELL', reason: 'Ichimoku Bearish Below Cloud' });
+          }
+        }
+        break;
+        
+      case 'PARABOLIC_SAR':
+        // Parabolic SAR strategy
+        if (current.close > current.sar && previous.close <= previous.sar) {
+          signals.push({ index: i, type: 'BUY', reason: 'SAR Bullish Reversal' });
+        } else if (current.close < current.sar && previous.close >= previous.sar) {
+          signals.push({ index: i, type: 'SELL', reason: 'SAR Bearish Reversal' });
+        }
+        break;
+        
+      case 'VOLUME_BREAKOUT':
+        // Volume breakout strategy
+        if (current.volume > current.volumeAvg * 2 && current.close > previous.close) {
+          signals.push({ index: i, type: 'BUY', reason: 'High Volume Bullish Breakout' });
+        } else if (current.volume > current.volumeAvg * 2 && current.close < previous.close) {
+          signals.push({ index: i, type: 'SELL', reason: 'High Volume Bearish Breakdown' });
+        }
+        break;
+        
+      case 'MOMENTUM_REVERSAL':
+        // Momentum reversal strategy
+        if (current.momentum > 5 && previous.momentum <= 0) {
+          signals.push({ index: i, type: 'BUY', reason: 'Momentum Bullish Reversal' });
+        } else if (current.momentum < -5 && previous.momentum >= 0) {
+          signals.push({ index: i, type: 'SELL', reason: 'Momentum Bearish Reversal' });
         }
         break;
     }
