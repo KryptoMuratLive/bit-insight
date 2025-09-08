@@ -60,10 +60,11 @@ import { OrderFlow } from "@/components/OrderFlow";
 import { RiskManagement } from "@/components/RiskManagement";
 import { PatternRecognition } from "@/components/PatternRecognition";
 import { TradeJournal } from "@/components/TradeJournal";
-import { StrategyBacktest } from "@/components/StrategyBacktest";
+import { OpenInterestAnalysis } from "@/components/OpenInterestAnalysis";
 import { MultiTimeframeAnalysis } from "@/components/MultiTimeframeAnalysis";
 import { TradingGuide } from "@/components/TradingGuide";
 import { SignalAggregation } from "@/components/SignalAggregation";
+import { StrategyBacktest } from "@/components/StrategyBacktest";
 
 // --- Types
 interface Candle { t: number; o: number; h: number; l: number; c: number; v: number }
@@ -1298,7 +1299,9 @@ export default function BTCTradingDashboard(){
         />
         
         {/* Strategy Backtest */}
-        <StrategyBacktest />
+        <div className="col-span-2">
+          <StrategyBacktest />
+        </div>
       </div>
 
       {/* Precision Gate */}

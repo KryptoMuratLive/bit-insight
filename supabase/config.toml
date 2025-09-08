@@ -28,6 +28,9 @@ verify_jwt = false
 [functions.signal-aggregation]
 verify_jwt = false
 
+[functions.open-interest-analysis]
+verify_jwt = false
+
 [functions.strategy-backtest]
 verify_jwt = false
 
