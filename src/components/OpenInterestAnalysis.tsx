@@ -280,152 +280,135 @@ export function OpenInterestAnalysis({ symbol = "BTCUSDT" }: OpenInterestAnalysi
           </TabsContent>
 
           <TabsContent value="liquidations" className="space-y-4">
-            {/* Liquidation Heatmap */}
+            {/* Simplified Liquidation Zones */}
             <div>
-              <h3 className="text-lg font-semibold mb-3">Liquidation Heatmap</h3>
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-6">
-                {/* Heatmap Grid */}
-                <Card>
-                  <CardHeader className="pb-3">
-                    <CardTitle className="text-sm">Price Level Intensity</CardTitle>
-                  </CardHeader>
-                  <CardContent>
-                    <div className="space-y-1">
-                      {data.liquidationClusters.slice(0, 12).map((cluster, index) => {
-                        const maxVolume = Math.max(...data.liquidationClusters.map(c => c.volume));
-                        const relativeIntensity = (cluster.volume / maxVolume) * 100;
-                        const heatColor = cluster.side === 'LONG' 
-                          ? `bg-red-${Math.floor(relativeIntensity / 20) * 100 + 100}` 
-                          : `bg-green-${Math.floor(relativeIntensity / 20) * 100 + 100}`;
-                        
-                        return (
-                          <div 
-                            key={index} 
-                            className={`p-3 rounded-lg border transition-all hover:scale-102 cursor-pointer ${
-                              cluster.intensity > 75 ? 'bg-red-500/20 border-red-500' :
-                              cluster.intensity > 50 ? 'bg-orange-500/20 border-orange-500' :
-                              cluster.intensity > 25 ? 'bg-yellow-500/20 border-yellow-500' :
-                              'bg-blue-500/20 border-blue-500'
-                            }`}
-                            title={`${cluster.side} liquidations at $${formatPrice(cluster.price)}`}
-                          >
-                            <div className="flex items-center justify-between">
-                              <div className="flex items-center gap-2">
-                                <Badge 
-                                  variant={cluster.side === 'LONG' ? 'destructive' : 'default'}
-                                  className="text-xs"
-                                >
-                                  {cluster.side}
-                                </Badge>
-                                <span className="font-mono text-sm font-medium">
-                                  ${formatPrice(cluster.price)}
-                                </span>
-                              </div>
-                              <div className="flex items-center gap-2">
+              <h3 className="text-lg font-semibold mb-3">Liquidation Zones & Trading Tips</h3>
+              
+              {/* Quick Overview */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
+                <Card className="border-l-4 border-l-red-500">
+                  <CardContent className="p-4">
+                    <h4 className="font-semibold text-red-600 mb-2">🔴 Danger Zones</h4>
+                    <div className="space-y-2">
+                      {data.liquidationClusters
+                        .filter(c => c.intensity > 60)
+                        .slice(0, 3)
+                        .map((cluster, index) => (
+                          <div key={index} className="flex justify-between items-center p-2 bg-red-50 rounded">
+                            <span className="font-mono text-sm">${formatPrice(cluster.price)}</span>
+                            <Badge variant="destructive" className="text-xs">
+                              {cluster.intensity.toFixed(0)}% Risk
+                            </Badge>
+                          </div>
+                        ))}
+                    </div>
+                    <p className="text-xs text-red-600 mt-2">⚠️ Vermeide Stops in diesen Bereichen!</p>
+                  </CardContent>
+                </Card>
+
+                <Card className="border-l-4 border-l-green-500">
+                  <CardContent className="p-4">
+                    <h4 className="font-semibold text-green-600 mb-2">🟢 Sichere Zonen</h4>
+                    <div className="space-y-2">
+                      {data.liquidationClusters
+                        .filter(c => c.intensity < 30)
+                        .slice(0, 3)
+                        .map((cluster, index) => (
+                          <div key={index} className="flex justify-between items-center p-2 bg-green-50 rounded">
+                            <span className="font-mono text-sm">${formatPrice(cluster.price)}</span>
+                            <Badge variant="outline" className="text-xs border-green-500 text-green-600">
+                              {cluster.intensity.toFixed(0)}% Risk
+                            </Badge>
+                          </div>
+                        ))}
+                    </div>
+                    <p className="text-xs text-green-600 mt-2">✅ Bessere Entry/Exit Bereiche</p>
+                  </CardContent>
+                </Card>
+              </div>
+
+              {/* Visual Zone Map */}
+              <Card>
+                <CardHeader>
+                  <CardTitle className="text-sm">Liquidation Zone Map</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <div className="space-y-2">
+                    {data.liquidationClusters.slice(0, 8).map((cluster, index) => {
+                      const getRiskLevel = (intensity: number) => {
+                        if (intensity > 70) return { color: 'bg-red-500', text: 'EXTREM', textColor: 'text-red-700' };
+                        if (intensity > 50) return { color: 'bg-orange-500', text: 'HOCH', textColor: 'text-orange-700' };
+                        if (intensity > 30) return { color: 'bg-yellow-500', text: 'MITTEL', textColor: 'text-yellow-700' };
+                        return { color: 'bg-green-500', text: 'NIEDRIG', textColor: 'text-green-700' };
+                      };
+                      
+                      const risk = getRiskLevel(cluster.intensity);
+                      
+                      return (
+                        <div 
+                          key={index} 
+                          className={`p-3 rounded-lg border-2 transition-all hover:scale-[1.02] ${
+                            cluster.intensity > 60 ? 'border-red-500 bg-red-50' :
+                            cluster.intensity > 30 ? 'border-yellow-500 bg-yellow-50' :
+                            'border-green-500 bg-green-50'
+                          }`}
+                        >
+                          <div className="flex items-center justify-between">
+                            <div className="flex items-center gap-3">
+                              <Badge variant={cluster.side === 'LONG' ? 'destructive' : 'default'}>
+                                {cluster.side}
+                              </Badge>
+                              <div>
+                                <div className="font-mono font-bold text-lg">${formatPrice(cluster.price)}</div>
                                 <div className="text-xs text-muted-foreground">
-                                  {formatNumber(cluster.volume)}
+                                  Volume: {formatNumber(cluster.volume)}
                                 </div>
-                                <div className={`w-12 h-2 rounded-full ${
-                                  cluster.intensity > 75 ? 'bg-red-500' :
-                                  cluster.intensity > 50 ? 'bg-orange-500' :
-                                  cluster.intensity > 25 ? 'bg-yellow-500' :
-                                  'bg-blue-500'
-                                }`} style={{ opacity: cluster.intensity / 100 }} />
+                              </div>
+                            </div>
+                            <div className="text-right">
+                              <div className={`px-2 py-1 rounded text-xs font-bold ${risk.textColor} bg-white border`}>
+                                {risk.text}
+                              </div>
+                              <div className="flex items-center gap-2 mt-1">
+                                <div className={`w-16 h-3 rounded-full ${risk.color}`} 
+                                     style={{ opacity: Math.max(0.3, cluster.intensity / 100) }} />
+                                <span className="text-sm font-bold">{cluster.intensity.toFixed(0)}%</span>
                               </div>
                             </div>
                           </div>
-                        );
-                      })}
-                    </div>
-                  </CardContent>
-                </Card>
-
-                {/* Trading Tips */}
-                <Card>
-                  <CardHeader className="pb-3">
-                    <CardTitle className="text-sm flex items-center gap-2">
-                      <AlertTriangle className="h-4 w-4 text-yellow-500" />
-                      Trading Tips
-                    </CardTitle>
-                  </CardHeader>
-                  <CardContent className="space-y-3">
-                    {/* High Intensity Zones */}
-                    {data.liquidationClusters.filter(c => c.intensity > 70).length > 0 && (
-                      <div className="p-3 bg-red-50 border border-red-200 rounded-lg">
-                        <h4 className="font-medium text-red-800 mb-1">🔥 High Risk Zones</h4>
-                        <p className="text-sm text-red-700">
-                          {data.liquidationClusters.filter(c => c.intensity > 70).length} high-intensity liquidation zones detected. 
-                          Avoid placing stops near ${formatPrice(data.liquidationClusters.find(c => c.intensity > 70)?.price || 0)}.
-                        </p>
-                      </div>
-                    )}
-
-                    {/* Support/Resistance Tips */}
-                    <div className="p-3 bg-blue-50 border border-blue-200 rounded-lg">
-                      <h4 className="font-medium text-blue-800 mb-1">📊 Key Levels</h4>
-                      <p className="text-sm text-blue-700">
-                        Major liquidation clusters often act as support/resistance. 
-                        Watch for bounces at ${formatPrice(data.liquidationClusters[0]?.price || 0)}.
-                      </p>
-                    </div>
-
-                    {/* Entry Strategy */}
-                    <div className="p-3 bg-green-50 border border-green-200 rounded-lg">
-                      <h4 className="font-medium text-green-800 mb-1">🎯 Entry Strategy</h4>
-                      <p className="text-sm text-green-700">
-                        Look for entries between liquidation clusters for safer positioning. 
-                        Current safe zones around price gaps.
-                      </p>
-                    </div>
-
-                    {/* Long/Short Bias */}
-                    {data.liquidationClusters.filter(c => c.side === 'LONG').length > 
-                     data.liquidationClusters.filter(c => c.side === 'SHORT').length ? (
-                      <div className="p-3 bg-orange-50 border border-orange-200 rounded-lg">
-                        <h4 className="font-medium text-orange-800 mb-1">⚖️ Market Bias</h4>
-                        <p className="text-sm text-orange-700">
-                          More LONG liquidations suggest overleveraged bulls. 
-                          Consider SHORT bias on rejections at resistance.
-                        </p>
-                      </div>
-                    ) : (
-                      <div className="p-3 bg-purple-50 border border-purple-200 rounded-lg">
-                        <h4 className="font-medium text-purple-800 mb-1">⚖️ Market Bias</h4>
-                        <p className="text-sm text-purple-700">
-                          More SHORT liquidations suggest potential SHORT squeeze. 
-                          Watch for LONG opportunities on support holds.
-                        </p>
-                      </div>
-                    )}
-                  </CardContent>
-                </Card>
-              </div>
-
-              {/* Detailed Cluster List */}
-              <div>
-                <h3 className="text-lg font-semibold mb-3">Detailed Liquidation Clusters</h3>
-                <div className="space-y-2">
-                  {data.liquidationClusters.slice(0, 10).map((cluster, index) => (
-                    <div key={index} className="flex items-center justify-between p-3 border rounded-lg hover:bg-muted/50 transition-colors">
-                      <div className="flex items-center gap-3">
-                        <Badge variant={cluster.side === 'LONG' ? 'destructive' : 'default'}>
-                          {cluster.side}
-                        </Badge>
-                        <div>
-                          <div className="font-medium">${formatPrice(cluster.price)}</div>
-                          <div className="text-sm text-muted-foreground">
-                            Volume: {formatNumber(cluster.volume)}
-                          </div>
                         </div>
-                      </div>
-                      <div className="text-right">
-                        <Progress value={cluster.intensity} className="w-20 h-2 mb-1" />
-                        <div className="text-xs text-muted-foreground">{cluster.intensity.toFixed(0)}%</div>
-                      </div>
+                      );
+                    })}
+                  </div>
+                </CardContent>
+              </Card>
+
+              {/* Trading Strategy Tips */}
+              <Card className="border-l-4 border-l-blue-500">
+                <CardHeader>
+                  <CardTitle className="text-sm text-blue-600">💡 Trading Strategie</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div>
+                      <h5 className="font-medium mb-2">🎯 Entry Tipps:</h5>
+                      <ul className="text-sm space-y-1 text-muted-foreground">
+                        <li>• Entries zwischen Liquidation Zonen platzieren</li>
+                        <li>• Sichere Zonen (&lt;30% Risk) bevorzugen</li>
+                        <li>• Volume Confirmation abwarten</li>
+                      </ul>
                     </div>
-                  ))}
-                </div>
-              </div>
+                    <div>
+                      <h5 className="font-medium mb-2">🛡️ Risk Management:</h5>
+                      <ul className="text-sm space-y-1 text-muted-foreground">
+                        <li>• Stop-Loss NICHT in roten Zonen (&gt;60%)</li>
+                        <li>• Take-Profit vor großen Clustern</li>
+                        <li>• Position Size bei hohem Risk reduzieren</li>
+                      </ul>
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
             </div>
           </TabsContent>
 
