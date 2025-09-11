@@ -292,6 +292,7 @@ export default function BTCTradingDashboard(){
   const [showTrendLines, setShowTrendLines] = useState(true);
 
   // Liquidations Heatmap
+  const [showHeatmap] = useState<boolean>(false);
   const heatWrapRef = useRef<HTMLDivElement | null>(null);
   const heatCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const [rangeUSD, setRangeUSD] = useState<number>(2000);
@@ -937,7 +938,8 @@ export default function BTCTradingDashboard(){
       </div>
 
       {/* Liquidations Heatmap */}
-      <Card>
+      {showHeatmap && (
+        <Card>
         <CardHeader className="pb-2">
           <CardTitle>Liquidations Heatmap (Futures)</CardTitle>
         </CardHeader>
@@ -984,7 +986,8 @@ export default function BTCTradingDashboard(){
             />
           </div>
         </CardContent>
-      </Card>
+        </Card>
+      )}
 
       {/* FVG & Trendlines */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
