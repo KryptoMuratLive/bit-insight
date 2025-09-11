@@ -270,6 +270,7 @@ export default function BTCTradingDashboard(){
   const [candles, setCandles] = useState<Candle[]>([]);
   const [signals, setSignals] = useState<Signal[]>([]);
   const [lastPrice, setLastPrice] = useState<number>(0);
+  const lastPriceRef = useRef<number>(0);
   const [stats, setStats] = useState<{ change: number; high: number; low: number } | null>(null);
 
   const [showEMA50, setShowEMA50] = useState(true);
@@ -296,7 +297,7 @@ export default function BTCTradingDashboard(){
   const [rangeUSD, setRangeUSD] = useState<number>(2000);
   const [bucketUSD, setBucketUSD] = useState<number>(25); 
   const [heatCols, setHeatCols] = useState<number>(180);
-  const [minNotional, setMinNotional] = useState<number>(10000);
+  const [minNotional, setMinNotional] = useState<number>(2000);
   const [showBuys, setShowBuys] = useState<boolean>(true);
   const [showSells, setShowSells] = useState<boolean>(true);
   const [logScale, setLogScale] = useState<boolean>(true);
@@ -379,6 +380,9 @@ export default function BTCTradingDashboard(){
 
     return () => ws.close();
   }, [symbol, timeframe]);
+
+  // keep last price ref in sync
+  useEffect(() => { lastPriceRef.current = lastPrice; }, [lastPrice]);
 
   // --- WebSocket orderbook partial depth (top 20 levels)
   useEffect(() => {
@@ -483,9 +487,9 @@ export default function BTCTradingDashboard(){
   // --- Liquidations WebSocket (Binance Futures)
   useEffect(() => {
     if(wsLiq.current){ wsLiq.current.close(); wsLiq.current = null; }
-    const stream = `${symbol.toLowerCase()}@forceOrder`;
+    const futSym = symbol.toUpperCase().endsWith('USDT') ? symbol : 'BTCUSDT';
+    const stream = `${futSym.toLowerCase()}@forceOrder`;
     const ws = new WebSocket(`wss://fstream.binance.com/ws/${stream}`);
-    wsLiq.current = ws;
     ws.onmessage = (ev) => {
       try{
         const e = JSON.parse(ev.data);
@@ -496,7 +500,7 @@ export default function BTCTradingDashboard(){
         if(!price || !qty) return;
         const notional = price * qty;
         const rows = Math.floor((2*rangeUSD)/bucketUSD)+1; const mid = Math.floor(rows/2);
-        const center = lastPrice || price;
+        const center = lastPriceRef.current || price;
         const idx = Math.round((price - center)/bucketUSD) + mid;
         if(idx>=0 && idx<rows){
           if(side === 'BUY'){ const acc = accumBuyRef.current; acc.set(idx, (acc.get(idx)||0) + notional); }
@@ -507,7 +511,7 @@ export default function BTCTradingDashboard(){
       } catch {}
     };
     return () => ws.close();
-  }, [symbol, lastPrice, rangeUSD, bucketUSD]);
+  }, [symbol, rangeUSD, bucketUSD]);
 
   // --- Heatmap matrix init
   useEffect(() => {
@@ -969,14 +973,14 @@ export default function BTCTradingDashboard(){
             </div>
           </div>
           <div className="text-xs text-muted-foreground mb-3">
-            Tippen oder hovern zeigt Preis, Volumen und Zeit an. Grün = Buy-Liq, Rot = Sell-Liq.
+            Tippen/hovern zeigt Preis, Volumen und Zeit. Grün = Buy-Liq, Rot = Sell-Liq. Wenn nichts sichtbar ist: Min Notional senken und Log‑Skala aktivieren.
           </div>
           <div ref={heatWrapRef} className="w-full overflow-hidden rounded border border-border">
             <canvas 
               ref={heatCanvasRef} 
               width={980} 
-              height={300} 
-              className="w-full h-[300px] block bg-slate-900" 
+              height={320} 
+              className="w-full h-[320px] block bg-slate-900" 
             />
           </div>
         </CardContent>
