@@ -9,11 +9,14 @@ const corsHeaders = {
 interface BacktestParams {
   symbol: string;
   timeframe: string;
-  strategyType: 'EMA_CROSS' | 'RSI_OVERSOLD' | 'MACD_DIVERGENCE' | 'BOLLINGER_SQUEEZE' | 'SMA_CROSS' | 'STOCHASTIC_OVERSOLD' | 'WILLIAMS_R' | 'CCI_REVERSAL' | 'ICHIMOKU_CLOUD' | 'PARABOLIC_SAR' | 'VOLUME_BREAKOUT' | 'MOMENTUM_REVERSAL';
+  strategyType: 'EMA_CROSS' | 'RSI_OVERSOLD' | 'MACD_DIVERGENCE' | 'BOLLINGER_SQUEEZE' | 'SMA_CROSS' | 'STOCHASTIC_OVERSOLD' | 'WILLIAMS_R' | 'CCI_REVERSAL' | 'ICHIMOKU_CLOUD' | 'PARABOLIC_SAR' | 'VOLUME_BREAKOUT' | 'MOMENTUM_REVERSAL' | 'MULTI_CONFLUENCE' | 'VWAP_REVERSION' | 'ADX_TREND' | 'MFI_DIVERGENCE';
   startDate: string;
   endDate: string;
   initialCapital: number;
   positionSize: number; // Percentage of capital per trade
+  stopLossPercent: number;
+  takeProfitPercent: number;
+  useATRPositioning: boolean;
 }
 
 interface Trade {
@@ -47,6 +50,10 @@ interface BacktestResults {
   averageLoss: number;
   largestWin: number;
   largestLoss: number;
+  averageHoldingTime: number;
+  calmarRatio: number;
+  sortinoRatio: number;
+  maxConsecutiveLosses: number;
   trades: Trade[];
   equityCurve: Array<{ time: number; equity: number; drawdown: number }>;
 }
@@ -137,7 +144,12 @@ function calculateTechnicalIndicators(klineData: any[]) {
     ichimoku: calculateIchimoku(highs.slice(0, i + 1), lows.slice(0, i + 1), closes.slice(0, i + 1)),
     sar: calculateParabolicSAR(highs.slice(0, i + 1), lows.slice(0, i + 1), 0.02, 0.2),
     volumeAvg: calculateSMA(volumes.slice(0, i + 1), 20),
-    momentum: calculateMomentum(closes.slice(0, i + 1), 10)
+    momentum: calculateMomentum(closes.slice(0, i + 1), 10),
+    atr: calculateATR(highs.slice(0, i + 1), lows.slice(0, i + 1), closes.slice(0, i + 1), 14),
+    vwap: calculateVWAP(klineData.slice(0, i + 1)),
+    obv: calculateOBV(closes.slice(0, i + 1), volumes.slice(0, i + 1)),
+    mfi: calculateMFI(highs.slice(0, i + 1), lows.slice(0, i + 1), closes.slice(0, i + 1), volumes.slice(0, i + 1), 14),
+    adx: calculateADX(highs.slice(0, i + 1), lows.slice(0, i + 1), closes.slice(0, i + 1), 14)
   }));
 }
 
@@ -152,6 +164,12 @@ function calculateEMA(prices: number[], period: number): number {
   }
   
   return ema;
+}
+
+function calculateSMA(prices: number[], period: number): number {
+  if (prices.length < period) return prices[prices.length - 1] || 0;
+  const recentPrices = prices.slice(-period);
+  return recentPrices.reduce((sum, price) => sum + price, 0) / period;
 }
 
 function calculateRSI(prices: number[], period: number): number {
@@ -203,12 +221,6 @@ function calculateBollingerBands(prices: number[], period: number, stdDev: numbe
     middle: sma,
     lower: sma - (standardDeviation * stdDev)
   };
-}
-
-function calculateSMA(prices: number[], period: number): number {
-  if (prices.length < period) return prices[prices.length - 1] || 0;
-  const recentPrices = prices.slice(-period);
-  return recentPrices.reduce((sum, price) => sum + price, 0) / period;
 }
 
 function calculateStochastic(highs: number[], lows: number[], closes: number[], period: number) {
@@ -293,6 +305,100 @@ function calculateMomentum(prices: number[], period: number): number {
   return ((current - previous) / previous) * 100;
 }
 
+function calculateATR(highs: number[], lows: number[], closes: number[], period: number): number {
+  if (highs.length < 2) return 0;
+  
+  const trueRanges = [];
+  for (let i = 1; i < highs.length; i++) {
+    const tr1 = highs[i] - lows[i];
+    const tr2 = Math.abs(highs[i] - closes[i - 1]);
+    const tr3 = Math.abs(lows[i] - closes[i - 1]);
+    trueRanges.push(Math.max(tr1, tr2, tr3));
+  }
+  
+  return calculateSMA(trueRanges, Math.min(period, trueRanges.length));
+}
+
+function calculateVWAP(klineData: any[]): number {
+  if (klineData.length === 0) return 0;
+  
+  let cumulativeVolume = 0;
+  let cumulativePriceVolume = 0;
+  
+  for (const candle of klineData) {
+    const typicalPrice = (candle.high + candle.low + candle.close) / 3;
+    cumulativePriceVolume += typicalPrice * candle.volume;
+    cumulativeVolume += candle.volume;
+  }
+  
+  return cumulativeVolume > 0 ? cumulativePriceVolume / cumulativeVolume : 0;
+}
+
+function calculateOBV(closes: number[], volumes: number[]): number {
+  if (closes.length < 2) return 0;
+  
+  let obv = 0;
+  for (let i = 1; i < closes.length; i++) {
+    if (closes[i] > closes[i - 1]) {
+      obv += volumes[i];
+    } else if (closes[i] < closes[i - 1]) {
+      obv -= volumes[i];
+    }
+  }
+  
+  return obv;
+}
+
+function calculateMFI(highs: number[], lows: number[], closes: number[], volumes: number[], period: number): number {
+  if (highs.length < period + 1) return 50;
+  
+  const typicalPrices = highs.map((high, i) => (high + lows[i] + closes[i]) / 3);
+  const moneyFlows = typicalPrices.map((tp, i) => tp * volumes[i]);
+  
+  let positiveFlow = 0;
+  let negativeFlow = 0;
+  
+  for (let i = Math.max(1, typicalPrices.length - period); i < typicalPrices.length; i++) {
+    if (typicalPrices[i] > typicalPrices[i - 1]) {
+      positiveFlow += moneyFlows[i];
+    } else if (typicalPrices[i] < typicalPrices[i - 1]) {
+      negativeFlow += moneyFlows[i];
+    }
+  }
+  
+  if (negativeFlow === 0) return 100;
+  const moneyRatio = positiveFlow / negativeFlow;
+  return 100 - (100 / (1 + moneyRatio));
+}
+
+function calculateADX(highs: number[], lows: number[], closes: number[], period: number): number {
+  if (highs.length < period + 1) return 0;
+  
+  const dmPlus = [];
+  const dmMinus = [];
+  
+  for (let i = 1; i < highs.length; i++) {
+    const upMove = highs[i] - highs[i - 1];
+    const downMove = lows[i - 1] - lows[i];
+    
+    dmPlus.push(upMove > downMove && upMove > 0 ? upMove : 0);
+    dmMinus.push(downMove > upMove && downMove > 0 ? downMove : 0);
+  }
+  
+  const avgDMPlus = calculateSMA(dmPlus, Math.min(period, dmPlus.length));
+  const avgDMMinus = calculateSMA(dmMinus, Math.min(period, dmMinus.length));
+  const atr = calculateATR(highs, lows, closes, period);
+  
+  if (atr === 0) return 0;
+  
+  const diPlus = (avgDMPlus / atr) * 100;
+  const diMinus = (avgDMMinus / atr) * 100;
+  
+  if (diPlus + diMinus === 0) return 0;
+  
+  return Math.abs(diPlus - diMinus) / (diPlus + diMinus) * 100;
+}
+
 function generateTradingSignals(technicalData: any[], strategyType: string) {
   const signals: Array<{ index: number; type: 'BUY' | 'SELL'; reason: string }> = [];
   
@@ -328,7 +434,7 @@ function generateTradingSignals(technicalData: any[], strategyType: string) {
         }
         break;
         
-        case 'BOLLINGER_SQUEEZE':
+      case 'BOLLINGER_SQUEEZE':
         // Bollinger Band squeeze strategy
         if (current.close <= current.bb.lower) {
           signals.push({ index: i, type: 'BUY', reason: 'Bollinger Lower Band Touch' });
@@ -412,6 +518,66 @@ function generateTradingSignals(technicalData: any[], strategyType: string) {
           signals.push({ index: i, type: 'SELL', reason: 'Momentum Bearish Reversal' });
         }
         break;
+        
+      case 'MULTI_CONFLUENCE':
+        // Multi-indicator confluence strategy
+        let bullishSignals = 0;
+        let bearishSignals = 0;
+        
+        // RSI signal
+        if (current.rsi < 30) bullishSignals++;
+        if (current.rsi > 70) bearishSignals++;
+        
+        // MACD signal
+        if (current.macd.macd > current.macd.signal) bullishSignals++;
+        if (current.macd.macd < current.macd.signal) bearishSignals++;
+        
+        // Volume confirmation
+        if (current.volume > current.volumeAvg * 1.5) {
+          if (current.close > previous.close) bullishSignals++;
+          if (current.close < previous.close) bearishSignals++;
+        }
+        
+        // ADX trend strength
+        if (current.adx > 25) {
+          if (current.ema12 > current.ema26) bullishSignals++;
+          if (current.ema12 < current.ema26) bearishSignals++;
+        }
+        
+        if (bullishSignals >= 3) {
+          signals.push({ index: i, type: 'BUY', reason: `Multi-Confluence Buy (${bullishSignals} signals)` });
+        } else if (bearishSignals >= 3) {
+          signals.push({ index: i, type: 'SELL', reason: `Multi-Confluence Sell (${bearishSignals} signals)` });
+        }
+        break;
+        
+      case 'VWAP_REVERSION':
+        // VWAP mean reversion strategy
+        const vwapDistance = ((current.close - current.vwap) / current.vwap) * 100;
+        if (vwapDistance < -2 && current.rsi < 40) {
+          signals.push({ index: i, type: 'BUY', reason: 'VWAP Mean Reversion Buy' });
+        } else if (vwapDistance > 2 && current.rsi > 60) {
+          signals.push({ index: i, type: 'SELL', reason: 'VWAP Mean Reversion Sell' });
+        }
+        break;
+        
+      case 'ADX_TREND':
+        // ADX trend following strategy
+        if (current.adx > 25 && current.ema12 > current.ema26 && previous.ema12 <= previous.ema26) {
+          signals.push({ index: i, type: 'BUY', reason: 'ADX Strong Trend Buy' });
+        } else if (current.adx > 25 && current.ema12 < current.ema26 && previous.ema12 >= previous.ema26) {
+          signals.push({ index: i, type: 'SELL', reason: 'ADX Strong Trend Sell' });
+        }
+        break;
+        
+      case 'MFI_DIVERGENCE':
+        // Money Flow Index divergence strategy
+        if (current.mfi < 20 && current.rsi < 30) {
+          signals.push({ index: i, type: 'BUY', reason: 'MFI Oversold + RSI Confluence' });
+        } else if (current.mfi > 80 && current.rsi > 70) {
+          signals.push({ index: i, type: 'SELL', reason: 'MFI Overbought + RSI Confluence' });
+        }
+        break;
     }
   }
   
@@ -425,14 +591,73 @@ function executeBacktest(klineData: any[], signals: any[], params: BacktestParam
   const equityCurve = [];
   let maxEquity = capital;
   let maxDrawdown = 0;
+  let consecutiveLosses = 0;
+  let maxConsecutiveLosses = 0;
   
   for (let i = 0; i < signals.length; i++) {
     const signal = signals[i];
     const candle = klineData[signal.index];
     
+    // Check stop loss and take profit for existing positions
+    if (position) {
+      const currentPrice = candle.close;
+      const priceChange = ((currentPrice - position.entryPrice) / position.entryPrice) * 100;
+      
+      let exitTriggered = false;
+      let exitReason = '';
+      
+      if (position.type === 'LONG') {
+        if (priceChange <= -params.stopLossPercent) {
+          exitTriggered = true;
+          exitReason = 'Stop Loss';
+        } else if (priceChange >= params.takeProfitPercent) {
+          exitTriggered = true;
+          exitReason = 'Take Profit';
+        }
+      }
+      
+      if (exitTriggered) {
+        const exitValue = position.shares * currentPrice;
+        const pnl = exitValue - position.entryValue;
+        const pnlPercent = (pnl / position.entryValue) * 100;
+        
+        capital += pnl;
+        
+        // Track consecutive losses
+        if (pnl < 0) {
+          consecutiveLosses++;
+          maxConsecutiveLosses = Math.max(maxConsecutiveLosses, consecutiveLosses);
+        } else {
+          consecutiveLosses = 0;
+        }
+        
+        trades.push({
+          entryTime: position.entryTime,
+          exitTime: candle.time,
+          entryPrice: position.entryPrice,
+          exitPrice: currentPrice,
+          type: 'LONG',
+          pnl: pnl,
+          pnlPercent: pnlPercent,
+          size: position.entryValue
+        });
+        
+        position = null;
+      }
+    }
+    
     if (signal.type === 'BUY' && !position) {
       // Open long position
-      const positionValue = capital * (params.positionSize / 100);
+      let positionValue = capital * (params.positionSize / 100);
+      
+      // ATR-based position sizing
+      if (params.useATRPositioning && klineData[signal.index].atr) {
+        const atr = klineData[signal.index].atr;
+        const riskAmount = capital * (params.stopLossPercent / 100);
+        const stopDistance = atr * 2; // 2 ATR stop
+        positionValue = Math.min(positionValue, riskAmount / (stopDistance / candle.close));
+      }
+      
       const shares = positionValue / candle.close;
       
       position = {
@@ -444,12 +669,20 @@ function executeBacktest(klineData: any[], signals: any[], params: BacktestParam
       };
       
     } else if (signal.type === 'SELL' && position && position.type === 'LONG') {
-      // Close long position
+      // Close long position based on signal
       const exitValue = position.shares * candle.close;
       const pnl = exitValue - position.entryValue;
       const pnlPercent = (pnl / position.entryValue) * 100;
       
       capital += pnl;
+      
+      // Track consecutive losses
+      if (pnl < 0) {
+        consecutiveLosses++;
+        maxConsecutiveLosses = Math.max(maxConsecutiveLosses, consecutiveLosses);
+      } else {
+        consecutiveLosses = 0;
+      }
       
       trades.push({
         entryTime: position.entryTime,
@@ -488,55 +721,70 @@ function executeBacktest(klineData: any[], signals: any[], params: BacktestParam
     });
   }
   
-  // Calculate performance metrics
-  const winningTrades = trades.filter(t => t.pnl > 0);
-  const losingTrades = trades.filter(t => t.pnl < 0);
+  // Calculate metrics
+  const winningTrades = trades.filter(t => t.pnl > 0).length;
+  const losingTrades = trades.filter(t => t.pnl < 0).length;
+  const winRate = trades.length > 0 ? (winningTrades / trades.length) * 100 : 0;
   
-  const totalReturn = capital - params.initialCapital;
-  const totalReturnPercent = (totalReturn / params.initialCapital) * 100;
+  const grossProfit = trades.filter(t => t.pnl > 0).reduce((sum, t) => sum + t.pnl, 0);
+  const grossLoss = Math.abs(trades.filter(t => t.pnl < 0).reduce((sum, t) => sum + t.pnl, 0));
+  const profitFactor = grossLoss > 0 ? grossProfit / grossLoss : 0;
   
-  const winRate = trades.length > 0 ? (winningTrades.length / trades.length) * 100 : 0;
+  const averageWin = winningTrades > 0 ? grossProfit / winningTrades : 0;
+  const averageLoss = losingTrades > 0 ? grossLoss / losingTrades : 0;
   
-  const grossProfit = winningTrades.reduce((sum, t) => sum + t.pnl, 0);
-  const grossLoss = Math.abs(losingTrades.reduce((sum, t) => sum + t.pnl, 0));
-  const profitFactor = grossLoss > 0 ? grossProfit / grossLoss : grossProfit > 0 ? 10 : 0;
+  const largestWin = trades.length > 0 ? Math.max(...trades.map(t => t.pnl)) : 0;
+  const largestLoss = trades.length > 0 ? Math.min(...trades.map(t => t.pnl)) : 0;
   
-  const averageWin = winningTrades.length > 0 ? grossProfit / winningTrades.length : 0;
-  const averageLoss = losingTrades.length > 0 ? grossLoss / losingTrades.length : 0;
+  // Calculate holding times
+  const holdingTimes = trades.map(t => t.exitTime - t.entryTime);
+  const averageHoldingTime = holdingTimes.length > 0 ? 
+    holdingTimes.reduce((sum, time) => sum + time, 0) / holdingTimes.length : 0;
   
-  const largestWin = winningTrades.length > 0 ? Math.max(...winningTrades.map(t => t.pnl)) : 0;
-  const largestLoss = losingTrades.length > 0 ? Math.min(...losingTrades.map(t => t.pnl)) : 0;
-  
-  // Simplified Sharpe ratio calculation
+  // Simple Sharpe ratio calculation
   const returns = trades.map(t => t.pnlPercent);
   const avgReturn = returns.length > 0 ? returns.reduce((sum, r) => sum + r, 0) / returns.length : 0;
   const returnStdDev = returns.length > 1 ? 
-    Math.sqrt(returns.reduce((sum, r) => sum + Math.pow(r - avgReturn, 2), 0) / (returns.length - 1)) : 1;
+    Math.sqrt(returns.reduce((sum, r) => sum + Math.pow(r - avgReturn, 2), 0) / (returns.length - 1)) : 0;
   const sharpeRatio = returnStdDev > 0 ? avgReturn / returnStdDev : 0;
   
-  const maxDrawdownPercent = (maxDrawdown / params.initialCapital) * 100;
+  // Sortino ratio (downside deviation)
+  const negativeReturns = returns.filter(r => r < 0);
+  const downsideStdDev = negativeReturns.length > 1 ?
+    Math.sqrt(negativeReturns.reduce((sum, r) => sum + Math.pow(r, 2), 0) / negativeReturns.length) : 0;
+  const sortinoRatio = downsideStdDev > 0 ? avgReturn / downsideStdDev : 0;
   
+  const maxDrawdownPercent = maxEquity > 0 ? (maxDrawdown / maxEquity) * 100 : 0;
+  
+  // Calmar ratio (annual return / max drawdown)
+  const totalReturnPercent = ((capital - params.initialCapital) / params.initialCapital) * 100;
+  const calmarRatio = maxDrawdownPercent > 0 ? totalReturnPercent / maxDrawdownPercent : 0;
+
   return {
     symbol: params.symbol,
     strategy: params.strategyType,
     period: `${params.startDate} to ${params.endDate}`,
     initialCapital: params.initialCapital,
     finalCapital: capital,
-    totalReturn: totalReturn,
+    totalReturn: capital - params.initialCapital,
     totalReturnPercent: totalReturnPercent,
     totalTrades: trades.length,
-    winningTrades: winningTrades.length,
-    losingTrades: losingTrades.length,
-    winRate: winRate,
-    profitFactor: profitFactor,
-    sharpeRatio: sharpeRatio,
-    maxDrawdown: maxDrawdown,
-    maxDrawdownPercent: maxDrawdownPercent,
-    averageWin: averageWin,
-    averageLoss: averageLoss,
-    largestWin: largestWin,
-    largestLoss: largestLoss,
-    trades: trades,
+    winningTrades,
+    losingTrades,
+    winRate,
+    profitFactor,
+    sharpeRatio,
+    maxDrawdown,
+    maxDrawdownPercent,
+    averageWin,
+    averageLoss,
+    largestWin,
+    largestLoss,
+    averageHoldingTime,
+    calmarRatio,
+    sortinoRatio,
+    maxConsecutiveLosses,
+    trades,
     equityCurve: equityCurve
   };
 }

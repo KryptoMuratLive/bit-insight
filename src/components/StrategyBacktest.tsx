@@ -14,11 +14,14 @@ import { toast } from 'sonner';
 interface BacktestParams {
   symbol: string;
   timeframe: string;
-  strategyType: 'EMA_CROSS' | 'RSI_OVERSOLD' | 'MACD_DIVERGENCE' | 'BOLLINGER_SQUEEZE';
+  strategyType: 'EMA_CROSS' | 'RSI_OVERSOLD' | 'MACD_DIVERGENCE' | 'BOLLINGER_SQUEEZE' | 'SMA_CROSS' | 'STOCHASTIC_OVERSOLD' | 'WILLIAMS_R' | 'CCI_REVERSAL' | 'ICHIMOKU_CLOUD' | 'PARABOLIC_SAR' | 'VOLUME_BREAKOUT' | 'MOMENTUM_REVERSAL' | 'MULTI_CONFLUENCE' | 'VWAP_REVERSION' | 'ADX_TREND' | 'MFI_DIVERGENCE';
   startDate: string;
   endDate: string;
   initialCapital: number;
   positionSize: number;
+  stopLossPercent: number;
+  takeProfitPercent: number;
+  useATRPositioning: boolean;
 }
 
 interface Trade {
@@ -52,6 +55,10 @@ interface BacktestResults {
   averageLoss: number;
   largestWin: number;
   largestLoss: number;
+  averageHoldingTime: number;
+  calmarRatio: number;
+  sortinoRatio: number;
+  maxConsecutiveLosses: number;
   trades: Trade[];
   equityCurve: Array<{ time: number; equity: number; drawdown: number }>;
 }
@@ -64,7 +71,10 @@ export function StrategyBacktest() {
     startDate: '2024-01-01',
     endDate: '2024-12-31',
     initialCapital: 10000,
-    positionSize: 10
+    positionSize: 10,
+    stopLossPercent: 2,
+    takeProfitPercent: 4,
+    useATRPositioning: false
   });
   
   const [results, setResults] = useState<BacktestResults | null>(null);
@@ -102,7 +112,19 @@ export function StrategyBacktest() {
       'EMA_CROSS': 'EMA Crossover',
       'RSI_OVERSOLD': 'RSI Oversold/Overbought',
       'MACD_DIVERGENCE': 'MACD Signal Cross',
-      'BOLLINGER_SQUEEZE': 'Bollinger Band Squeeze'
+      'BOLLINGER_SQUEEZE': 'Bollinger Band Squeeze',
+      'SMA_CROSS': 'SMA Crossover',
+      'STOCHASTIC_OVERSOLD': 'Stochastic Oversold/Overbought',
+      'WILLIAMS_R': 'Williams %R Reversal',
+      'CCI_REVERSAL': 'CCI Reversal',
+      'ICHIMOKU_CLOUD': 'Ichimoku Cloud',
+      'PARABOLIC_SAR': 'Parabolic SAR',
+      'VOLUME_BREAKOUT': 'Volume Breakout',
+      'MOMENTUM_REVERSAL': 'Momentum Reversal',
+      'MULTI_CONFLUENCE': 'Multi-Indicator Confluence',
+      'VWAP_REVERSION': 'VWAP Mean Reversion',
+      'ADX_TREND': 'ADX Trend Following',
+      'MFI_DIVERGENCE': 'Money Flow Index Divergence'
     };
     return names[strategy as keyof typeof names] || strategy;
   };
@@ -167,6 +189,10 @@ export function StrategyBacktest() {
                   <SelectItem value="PARABOLIC_SAR">Parabolic SAR Reversal</SelectItem>
                   <SelectItem value="VOLUME_BREAKOUT">Volume Breakout Strategy</SelectItem>
                   <SelectItem value="MOMENTUM_REVERSAL">Momentum Reversal Strategy</SelectItem>
+                  <SelectItem value="MULTI_CONFLUENCE">🔥 Multi-Indicator Confluence</SelectItem>
+                  <SelectItem value="VWAP_REVERSION">📈 VWAP Mean Reversion</SelectItem>
+                  <SelectItem value="ADX_TREND">💪 ADX Trend Following</SelectItem>
+                  <SelectItem value="MFI_DIVERGENCE">💰 Money Flow Index Divergence</SelectItem>
                 </SelectContent>
               </Select>
             </div>
@@ -213,6 +239,61 @@ export function StrategyBacktest() {
                 min="1"
                 max="100"
               />
+            </div>
+          </div>
+
+          {/* Risk Management Parameters */}
+          <div className="border-t pt-4">
+            <h3 className="text-lg font-semibold mb-4 text-primary">Risk Management</h3>
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+              <div className="space-y-2">
+                <Label htmlFor="stopLoss">Stop Loss (%)</Label>
+                <Input
+                  id="stopLoss"
+                  type="number"
+                  step="0.1"
+                  value={params.stopLossPercent}
+                  onChange={(e) => setParams(prev => ({ ...prev, stopLossPercent: Number(e.target.value) }))}
+                  min="0.1"
+                  max="10"
+                />
+              </div>
+              
+              <div className="space-y-2">
+                <Label htmlFor="takeProfit">Take Profit (%)</Label>
+                <Input
+                  id="takeProfit"
+                  type="number"
+                  step="0.1"
+                  value={params.takeProfitPercent}
+                  onChange={(e) => setParams(prev => ({ ...prev, takeProfitPercent: Number(e.target.value) }))}
+                  min="0.1"
+                  max="20"
+                />
+              </div>
+              
+              <div className="space-y-2">
+                <Label htmlFor="atrPositioning" className="flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    id="atrPositioning"
+                    checked={params.useATRPositioning}
+                    onChange={(e) => setParams(prev => ({ ...prev, useATRPositioning: e.target.checked }))}
+                    className="rounded"
+                  />
+                  ATR-Based Position Sizing
+                </Label>
+                <div className="text-xs text-muted-foreground">
+                  Uses Average True Range for dynamic position sizing
+                </div>
+              </div>
+              
+              <div className="space-y-2">
+                <Label className="text-sm font-medium">Risk/Reward Ratio</Label>
+                <div className="text-lg font-bold text-primary">
+                  1:{(params.takeProfitPercent / params.stopLossPercent).toFixed(1)}
+                </div>
+              </div>
             </div>
           </div>
 
@@ -328,6 +409,16 @@ export function StrategyBacktest() {
                 </div>
                 
                 <div className="flex justify-between">
+                  <span>Sortino Ratio:</span>
+                  <span className="font-medium">{results.sortinoRatio.toFixed(2)}</span>
+                </div>
+                
+                <div className="flex justify-between">
+                  <span>Calmar Ratio:</span>
+                  <span className="font-medium">{results.calmarRatio.toFixed(2)}</span>
+                </div>
+                
+                <div className="flex justify-between">
                   <span>Max Drawdown:</span>
                   <span className="font-medium text-red-600">{formatCurrency(results.maxDrawdown)}</span>
                 </div>
@@ -335,6 +426,16 @@ export function StrategyBacktest() {
                 <div className="flex justify-between">
                   <span>Max Drawdown %:</span>
                   <span className="font-medium text-red-600">{formatPercent(results.maxDrawdownPercent)}</span>
+                </div>
+                
+                <div className="flex justify-between">
+                  <span>Max Consecutive Losses:</span>
+                  <span className="font-medium text-red-600">{results.maxConsecutiveLosses}</span>
+                </div>
+                
+                <div className="flex justify-between">
+                  <span>Avg. Holding Time:</span>
+                  <span className="font-medium">{(results.averageHoldingTime / (1000 * 60 * 60)).toFixed(1)}h</span>
                 </div>
                 
                 <Separator />
